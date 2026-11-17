@@ -376,6 +376,8 @@ struct Launcher {
     background_error: Option<String>,
     /// Settings' data relocation confirmation and the worker's last result.
     location_target: Option<std::path::PathBuf>,
+    /// The confirmation is for moving only the build folder to `location_target`.
+    location_build: bool,
     location_error: Option<String>,
     location_note: Option<String>,
     settings: Settings,

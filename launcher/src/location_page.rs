@@ -1,4 +1,5 @@
-//! Settings' two-step data move. Only the separate worker copies data, after this process exits.
+//! Settings' two-step data and build-folder moves. Only the separate worker copies data, after
+//! this process exits.
 use super::*;
 
 fn env_value(key: &str) -> Option<String> {
@@ -19,6 +20,10 @@ pub(super) fn startup_error() -> Option<String> {
             env_value("SUNRISE_RELOCATION_ERROR")
                 .map(|error| trf("Data move failed: {error}", &[("error", &error)]))
         })
+        .or_else(|| {
+            env_value("SUNRISE_BUILD_RELOCATION_ERROR")
+                .map(|error| trf("Build files were not moved: {error}", &[("error", &error)]))
+        })
 }
 
 fn open_error(error: &str) -> String {
@@ -29,12 +34,29 @@ fn open_error(error: &str) -> String {
 }
 
 pub(super) fn startup_note() -> Option<String> {
-    env_value("SUNRISE_RELOCATION_BACKUP").map(|paths| {
-        trf(
-            "Data moved. Old folders still use disk space: {paths}. Verify your worlds and instances before removing them yourself.",
-            &[("paths", &paths)],
-        )
-    })
+    env_value("SUNRISE_RELOCATION_BACKUP")
+        .map(|paths| {
+            trf(
+                "Data moved. Old folders still use disk space: {paths}. Verify your worlds and instances before removing them yourself.",
+                &[("paths", &paths)],
+            )
+        })
+        .or_else(|| {
+            // The new folder, then any old one that could not be removed.
+            env_value("SUNRISE_BUILD_RELOCATED").map(|note| {
+                let mut lines = note.lines();
+                let path = lines.next().unwrap_or_default().to_owned();
+                let left: Vec<_> = lines.collect();
+                if left.is_empty() {
+                    trf("Build files moved to {path}.", &[("path", &path)])
+                } else {
+                    trf(
+                        "Build files moved to {path}. Some old ones could not be removed and still use disk space: {paths}",
+                        &[("path", &path), ("paths", &left.join(", "))],
+                    )
+                }
+            })
+        })
 }
 
 fn environment_blocked() -> bool {
@@ -77,18 +99,24 @@ impl Launcher {
         }
     }
 
-    fn choose_location(&mut self, cx: &mut Context<Self>) {
+    /// Asks for an empty folder for all data, or with `build` for the build files only.
+    fn choose_location(&mut self, build: bool, cx: &mut Context<Self>) {
         self.location_error = self.location_blocked();
         if self.location_error.is_some() {
             cx.notify();
             return;
         }
         self.location_target = None;
+        self.location_build = build;
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some(tr("Choose data folder").into()),
+            prompt: Some(if build {
+                tr("Choose build folder").into()
+            } else {
+                tr("Choose data folder").into()
+            }),
         });
         cx.spawn(async move |this, cx| {
             let result = match paths.await {
@@ -104,9 +132,12 @@ impl Launcher {
                             Ok(mut entries) => match entries.next() {
                                 None => this.location_target = Some(path),
                                 Some(Ok(_)) => {
-                                    this.location_error = Some(
-                                        tr("Choose an empty folder for Sunrise's data.").into(),
-                                    );
+                                    this.location_error = Some(if this.location_build {
+                                        tr("Choose an empty folder for Sunrise's build files.")
+                                            .into()
+                                    } else {
+                                        tr("Choose an empty folder for Sunrise's data.").into()
+                                    });
                                 }
                                 Some(Err(error)) => this.location_picker_error(error.to_string()),
                             },
@@ -167,9 +198,14 @@ impl Launcher {
         let Some(target) = self.location_target.as_ref() else {
             return;
         };
+        let flag = if self.location_build {
+            "--relocate-build"
+        } else {
+            "--relocate-data"
+        };
         let result = std::env::current_exe().and_then(|exe| {
             sunrise_launcher::process::command(exe)
-                .arg("--relocate-data")
+                .arg(flag)
                 .arg(target)
                 .arg("--restart")
                 .spawn()
@@ -198,7 +234,15 @@ impl Launcher {
             disabled(move_button)
         } else {
             move_button.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.choose_location(cx);
+                this.choose_location(false, cx);
+            }))
+        };
+        let move_build = button("move-build", "Move…", Kind::Secondary, &t);
+        let move_build = if blocked.is_some() {
+            disabled(move_build)
+        } else {
+            move_build.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.choose_location(true, cx);
             }))
         };
         let mut body = div()
@@ -237,6 +281,35 @@ impl Launcher {
                     ).to_string()))
                     .child(text(theme::CAPTION).text_color(t.muted).child(tr(
                         "The launcher closes while your data is copied and verified, then reopens. Old folders are kept and still use disk space until you verify the move and remove them yourself.",
+                    ).to_string())),
+            )
+            .child(index_row(
+                n,
+                tr("Build folder"),
+                Some(div().font_family(theme::MONO).child(short(&backend::build_dir())).into_any_element()),
+                Some(
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .child(
+                            button("open-build", "Open", Kind::Secondary, &t).on_click(
+                                |_, _, cx| crate::glass_toast::open(cx, &backend::build_dir()),
+                            ),
+                        )
+                        .child(move_build)
+                        .into_any_element(),
+                ),
+                &t,
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .min_w_0()
+                    .when(glass_ui::flat(), |d| d.px(px(16.)).pb(px(8.)))
+                    .child(text(theme::CAPTION).text_color(t.muted).child(tr(
+                        "Moves only the Rust toolchain and native mod builds, which can take many gigabytes, to an empty folder on another drive, for example. Settings, worlds and installed versions stay where they are. Once the copy is verified, the old build files are removed.",
                     ).to_string()))
                     .children(blocked.map(|message| text(theme::CAPTION).text_color(t.warn).child(message)))
                     .children(self.location_note.as_ref().map(|message| {
@@ -287,10 +360,17 @@ impl Launcher {
                     .gap(px(8.))
                     .p(px(12.))
                     .bg(t.well)
-                    .child(text(theme::UI).child(trf(
-                        "Move all data to {path}?",
-                        &[("path", &target.display().to_string())],
-                    )))
+                    .child(text(theme::UI).child(if self.location_build {
+                        trf(
+                            "Move the build files to {path}?",
+                            &[("path", &target.display().to_string())],
+                        )
+                    } else {
+                        trf(
+                            "Move all data to {path}?",
+                            &[("path", &target.display().to_string())],
+                        )
+                    }))
                     .child(div().flex().gap(px(8.)).child(confirm).child(
                         button("cancel-move-data", "Cancel", Kind::Secondary, &t).on_click(
                             cx.listener(|this, _: &ClickEvent, _, cx| {
