@@ -2034,6 +2034,8 @@ struct Game<'a> {
     adv: advancements::AdvState,
     restore_player_state: bool,
     stats_ui: stats_screen::StatsUi,
+    /// The mod guides' viewer over a container screen, its history and library (game/interface/guide_viewer.rs).
+    guides: guide_viewer::Guides,
     adv_ui: advancements_screen::AdvUi,
     /// The Server Links screens' state (game/network/server_links.rs).
     links_ui: server_links::LinksUi,
@@ -4902,6 +4904,8 @@ impl Game<'_> {
         } else {
             self.hud_layers(size)
         };
+        // The guide viewer covers the container screen it was opened on; the prompts stay over it.
+        self.draw_guide(&mut batch);
         // Vanilla's confirmation replaces the dialog as the screen.
         if self.command_prompt.is_none() {
             self.draw_dialog(&mut batch);
@@ -9523,6 +9527,9 @@ impl Game<'_> {
                         if self.screen == Screen::Stats {
                             self.stats_drag();
                         }
+                        if self.guides_open() {
+                            self.guide_cursor_moved();
+                        }
                         if self.screen == Screen::DebugOptions {
                             self.debug_options_drag();
                         }
@@ -9607,6 +9614,13 @@ impl Game<'_> {
                             self.code_of_conduct_scroll(d);
                         } else if self.server_packs.prompt.is_none() {
                             self.dialog_scroll(d);
+                        }
+                        return Ok(());
+                    }
+                    // The guide viewer over a container screen hears the wheel, not the screen under it.
+                    if self.guides_open() {
+                        if d != 0.0 {
+                            self.guide_wheel(d);
                         }
                         return Ok(());
                     }
@@ -9728,6 +9742,9 @@ impl Game<'_> {
                     if state == ElementState::Pressed && button == MouseButton::Left {
                         self.pack_prompt_click()?;
                     }
+                }
+                WindowEvent::MouseInput { state, button, .. } if self.guides_open() => {
+                    self.guide_mouse(state, button);
                 }
                 WindowEvent::MouseInput { state, button, .. } if self.dialog_open() => {
                     if button == MouseButton::Left {
@@ -10039,6 +10056,9 @@ impl Game<'_> {
                         self.answer_pack_prompt(false)?;
                     }
                 }
+                WindowEvent::KeyboardInput { event, .. } if self.guides_open() => {
+                    self.guide_key(&event)
+                }
                 WindowEvent::KeyboardInput { event, .. } if self.dialog_open() => {
                     let shortcut = self.edit_shortcut(&event);
                     if event.state == ElementState::Pressed
@@ -10281,6 +10301,10 @@ impl Game<'_> {
                     };
                     let pressed = event.state == ElementState::Pressed;
                     if self.key_press_canceled(key, pressed, event.repeat) {
+                        return Ok(());
+                    }
+                    // W over an item opens its guide page (sunrise-extras).
+                    if pressed && !event.repeat && self.guide_key_w(key) {
                         return Ok(());
                     }
                     self.native_panel_key_event(
@@ -11255,6 +11279,7 @@ impl<'a> Game<'a> {
             adv: Default::default(),
             restore_player_state: true,
             stats_ui: Default::default(),
+            guides: Default::default(),
             adv_ui: Default::default(),
             links_ui: Default::default(),
             camera_type: Default::default(),
