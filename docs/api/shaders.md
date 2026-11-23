@@ -53,7 +53,8 @@ shared = ["common.wgsl"]   # optional: WGSL put before every stage's file, in or
 [sky]                      # each stage is optional, but a pack has at least one
 file = "sky.wgsl"
 clouds = true              # optional: false when the pack draws its own clouds
-sun = true                 # optional: false when the pack draws its own sun (the moon stays)
+sun = true                 # optional: false when the pack draws its own sun
+moon = true                # optional: false when the pack draws its own moon
 stars = true               # optional: false when the pack draws its own stars
 
 [material]
@@ -256,6 +257,8 @@ draws them itself (the material stage covers terrain only). The first-person han
 
 ## Changelog
 
+- 2026-11-23: API 0.1 and 0.2 (additions): `[sky] moon`, true when absent: `false` turns Minecraft's moon off for
+  a sky that draws its own, as `sun = false` does the sun.
 - 2026-11-13: API 0.2 (**breaking**, experimental): the material stage keeps the engine's coverage unless the pack
   declares it, with `[material] coverage`, `"engine"` (the default) or `"pack"`. Under `"engine"` solid and cutout
   terrain's alpha test reads the texture's alpha, not the returned one, translucent terrain is cut on the texture's

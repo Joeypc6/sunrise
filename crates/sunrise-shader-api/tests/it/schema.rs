@@ -447,24 +447,31 @@ fn fog_is_a_key_of_the_material_stage() {
 }
 
 #[test]
-fn a_sky_can_keep_or_replace_minecrafts_clouds_sun_and_stars() {
-    let manifest = |stages: &str| {
-        Manifest::parse(&format!(
-            "schema = 1\nid = \"a\"\nname = \"A\"\nversion = \"1\"\napi = \"0.1\"\n{stages}"
-        ))
-    };
-    let m =
-        manifest("[sky]\nfile = \"s.wgsl\"\nclouds = false\nsun = false\nstars = true\n").unwrap();
-    let sky = m.sky.unwrap();
-    assert_eq!(
-        (sky.clouds, sky.sun, sky.stars),
-        (Some(false), Some(false), Some(true))
-    );
-    let m = manifest("[sky]\nfile = \"s.wgsl\"\n").unwrap();
-    assert_eq!(m.sky.unwrap().sun, None);
-    for key in ["clouds", "sun", "stars"] {
-        let e = manifest(&format!("[material]\nfile = \"m.wgsl\"\n{key} = false\n"));
-        assert!(e.unwrap_err().to_string().contains("keys of [sky] only"));
+fn a_sky_can_keep_or_replace_minecrafts_clouds_sun_moon_and_stars() {
+    for api in ["0.1", "0.2"] {
+        let manifest = |stages: &str| {
+            Manifest::parse(&format!(
+                "schema = 1\nid = \"a\"\nname = \"A\"\nversion = \"1\"\napi = \"{api}\"\n{stages}"
+            ))
+        };
+        let m = manifest(
+            "[sky]\nfile = \"s.wgsl\"\nclouds = false\nsun = false\nmoon = false\nstars = true\n",
+        )
+        .unwrap();
+        let sky = m.sky.unwrap();
+        assert_eq!(
+            (sky.clouds, sky.sun, sky.moon, sky.stars),
+            (Some(false), Some(false), Some(false), Some(true))
+        );
+        let m = manifest("[sky]\nfile = \"s.wgsl\"\nmoon = true\n").unwrap();
+        assert_eq!(m.sky.unwrap().moon, Some(true));
+        let m = manifest("[sky]\nfile = \"s.wgsl\"\n").unwrap();
+        let sky = m.sky.unwrap();
+        assert_eq!((sky.sun, sky.moon), (None, None));
+        for key in ["clouds", "sun", "moon", "stars"] {
+            let e = manifest(&format!("[material]\nfile = \"m.wgsl\"\n{key} = false\n"));
+            assert!(e.unwrap_err().to_string().contains("keys of [sky] only"));
+        }
     }
 }
 
@@ -879,7 +886,7 @@ fn the_0_2_keys_are_refused_under_0_1_and_checked_under_0_2() {
         ),
         (
             format!("{SMALLEST_0_2}[entity]\nfile = \"e.wgsl\"\nclouds = false\n"),
-            "`clouds`, `sun` and `stars` are keys of [sky] only",
+            "`clouds`, `sun`, `moon` and `stars` are keys of [sky] only",
         ),
         (
             format!("{SMALLEST_0_2}[entity]\nfile = \"e.glsl\"\n"),

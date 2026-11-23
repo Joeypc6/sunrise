@@ -66,11 +66,10 @@ impl Renderer {
                     }
                 }
                 if celestial_vertices > 0 && !pack_draws_celestial {
-                    // A pack sky drawing its own sun skips vanilla's.
-                    let own_sun = self
-                        .native
-                        .as_ref()
-                        .is_some_and(|n| n.sky.is_some() && !n.vanilla_sun);
+                    // A pack sky drawing its own sun or moon skips vanilla's.
+                    let own_sky = self.native.as_ref().filter(|n| n.sky.is_some());
+                    let own_sun = own_sky.is_some_and(|n| !n.vanilla_sun);
+                    let own_moon = own_sky.is_some_and(|n| !n.vanilla_moon);
                     // A resource pack's core/sky isn't vanilla's sky times the sky's
                     // lift, which the sun's disc pass assumes: today's add there.
                     let lifted = hdr_gain
@@ -79,7 +78,7 @@ impl Renderer {
                     let bodies = vanilla_bodies(
                         frame.celestial_bodies,
                         celestial_vertices / 4,
-                        own_sun,
+                        (own_sun, own_moon),
                         sky_switches,
                     );
                     pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
@@ -112,18 +111,19 @@ impl Renderer {
 }
 
 /// The celestial quads the game draws itself, by their place in `bodies` (what each quad is,
-/// `Frame::celestial_bodies`), of the `quads` uploaded: `own_sun` (a pack sky drawing its own)
-/// or a shader pack's `sun=false` leaves the sun out, `moon=false` the moon. The End's flash is
-/// neither and always draws. An entry past the quads uploaded has no quad to draw.
+/// `Frame::celestial_bodies`), of the `quads` uploaded: `own_sun` (a pack sky drawing its own,
+/// `[sky] sun = false`) or a shader pack's `sun=false` leaves the sun out, `own_moon` or
+/// `moon=false` the moon. The End's flash is neither and always draws. An entry past the quads
+/// uploaded has no quad to draw.
 fn vanilla_bodies(
     bodies: &[CelestialBody],
     quads: usize,
-    own_sun: bool,
+    (own_sun, own_moon): (bool, bool),
     switches: sunrise_shaders::SkySwitches,
 ) -> impl Iterator<Item = (u32, CelestialBody)> + '_ {
     let drawn = move |body: CelestialBody| match body {
         CelestialBody::Sun => !own_sun && switches.sun,
-        CelestialBody::Moon => switches.moon,
+        CelestialBody::Moon => !own_moon && switches.moon,
         CelestialBody::EndFlash => true,
     };
     (0u32..)

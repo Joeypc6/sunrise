@@ -1,4 +1,5 @@
-//! The sun and moon the game draws itself under a shader pack's `sun` and `moon` (spec 3.2).
+//! The sun and moon the game draws itself under a shader pack's `sun` and `moon` (spec 3.2),
+//! and under a native pack sky's `[sky] sun` and `moon`.
 
 use super::vanilla_bodies;
 use crate::gfx::CelestialBody::{self, EndFlash, Moon, Sun};
@@ -12,12 +13,13 @@ const ALL_ON: SkySwitches = SkySwitches {
 };
 
 /// The quads drawn, by their place, and what each is, with a quad uploaded for each of `bodies`.
+/// `own` is (`own_sun`, `own_moon`): a native pack sky with `[sky] sun = false`, `moon = false`.
 fn drawn(
     bodies: &[CelestialBody],
-    own_sun: bool,
+    own: (bool, bool),
     switches: SkySwitches,
 ) -> Vec<(u32, CelestialBody)> {
-    vanilla_bodies(bodies, bodies.len(), own_sun, switches).collect()
+    vanilla_bodies(bodies, bodies.len(), own, switches).collect()
 }
 
 /// The Overworld's two quads: the sun's, then the moon's.
@@ -25,7 +27,10 @@ const SUN_AND_MOON: &[CelestialBody] = &[Sun, Moon];
 
 #[test]
 fn both_bodies_draw_by_default() {
-    assert_eq!(drawn(SUN_AND_MOON, false, ALL_ON), [(0, Sun), (1, Moon)]);
+    assert_eq!(
+        drawn(SUN_AND_MOON, (false, false), ALL_ON),
+        [(0, Sun), (1, Moon)]
+    );
 }
 
 #[test]
@@ -34,7 +39,7 @@ fn sun_false_leaves_only_the_moon() {
         sun: false,
         ..ALL_ON
     };
-    assert_eq!(drawn(SUN_AND_MOON, false, switches), [(1, Moon)]);
+    assert_eq!(drawn(SUN_AND_MOON, (false, false), switches), [(1, Moon)]);
 }
 
 #[test]
@@ -43,7 +48,7 @@ fn moon_false_leaves_only_the_sun() {
         moon: false,
         ..ALL_ON
     };
-    assert_eq!(drawn(SUN_AND_MOON, false, switches), [(0, Sun)]);
+    assert_eq!(drawn(SUN_AND_MOON, (false, false), switches), [(0, Sun)]);
 }
 
 #[test]
@@ -53,7 +58,7 @@ fn sun_and_moon_false_leave_nothing() {
         moon: false,
         ..ALL_ON
     };
-    assert_eq!(drawn(SUN_AND_MOON, false, switches), []);
+    assert_eq!(drawn(SUN_AND_MOON, (false, false), switches), []);
 }
 
 /// The sky and stars switches don't touch the bodies.
@@ -64,13 +69,25 @@ fn sky_and_stars_false_keep_both_bodies() {
         stars: false,
         ..ALL_ON
     };
-    assert_eq!(drawn(SUN_AND_MOON, false, switches), [(0, Sun), (1, Moon)]);
+    assert_eq!(
+        drawn(SUN_AND_MOON, (false, false), switches),
+        [(0, Sun), (1, Moon)]
+    );
 }
 
 /// A pack sky drawing its own sun skips vanilla's, as before the switches.
 #[test]
 fn an_own_sun_still_skips_the_sun() {
-    assert_eq!(drawn(SUN_AND_MOON, true, ALL_ON), [(1, Moon)]);
+    assert_eq!(drawn(SUN_AND_MOON, (true, false), ALL_ON), [(1, Moon)]);
+}
+
+/// A pack sky drawing its own moon (`[sky] moon = false`) skips vanilla's and keeps the sun;
+/// drawing both its own leaves nothing.
+#[test]
+fn an_own_moon_skips_the_moon() {
+    assert_eq!(drawn(SUN_AND_MOON, (false, true), ALL_ON), [(0, Sun)]);
+    assert_eq!(drawn(SUN_AND_MOON, (true, true), ALL_ON), []);
+    assert_eq!(drawn(&[Moon], (false, true), ALL_ON), []);
 }
 
 /// The moon alone (the sun's sprite missing) is the first quad, and still the moon: `sun=false`
@@ -85,10 +102,10 @@ fn the_moon_alone_follows_only_moon() {
         moon: false,
         ..ALL_ON
     };
-    assert_eq!(drawn(&[Moon], false, ALL_ON), [(0, Moon)]);
-    assert_eq!(drawn(&[Moon], false, sun_off), [(0, Moon)]);
-    assert_eq!(drawn(&[Moon], false, moon_off), []);
-    assert_eq!(drawn(&[Moon], true, ALL_ON), [(0, Moon)]);
+    assert_eq!(drawn(&[Moon], (false, false), ALL_ON), [(0, Moon)]);
+    assert_eq!(drawn(&[Moon], (false, false), sun_off), [(0, Moon)]);
+    assert_eq!(drawn(&[Moon], (false, false), moon_off), []);
+    assert_eq!(drawn(&[Moon], (true, false), ALL_ON), [(0, Moon)]);
 }
 
 /// The sun alone (the moon's sprite missing): `moon=false` keeps it, `sun=false` leaves it out.
@@ -102,9 +119,9 @@ fn the_sun_alone_follows_only_sun() {
         moon: false,
         ..ALL_ON
     };
-    assert_eq!(drawn(&[Sun], false, ALL_ON), [(0, Sun)]);
-    assert_eq!(drawn(&[Sun], false, moon_off), [(0, Sun)]);
-    assert_eq!(drawn(&[Sun], false, sun_off), []);
+    assert_eq!(drawn(&[Sun], (false, false), ALL_ON), [(0, Sun)]);
+    assert_eq!(drawn(&[Sun], (false, false), moon_off), [(0, Sun)]);
+    assert_eq!(drawn(&[Sun], (false, false), sun_off), []);
 }
 
 /// The End's flash, its one quad, is neither the sun nor the moon.
@@ -115,12 +132,12 @@ fn the_end_flash_draws_whatever_sun_and_moon_say() {
         moon: false,
         ..ALL_ON
     };
-    assert_eq!(drawn(&[EndFlash], true, switches), [(0, EndFlash)]);
+    assert_eq!(drawn(&[EndFlash], (true, true), switches), [(0, EndFlash)]);
 }
 
 /// Only the quads uploaded draw: an entry past them has no quad.
 #[test]
 fn an_entry_past_the_quads_uploaded_isnt_drawn() {
-    let drawn: Vec<_> = vanilla_bodies(SUN_AND_MOON, 1, false, ALL_ON).collect();
+    let drawn: Vec<_> = vanilla_bodies(SUN_AND_MOON, 1, (false, false), ALL_ON).collect();
     assert_eq!(drawn, [(0, Sun)]);
 }
