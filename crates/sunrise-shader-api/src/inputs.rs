@@ -223,7 +223,11 @@ uniform! {
         /// The weights that give a colour's luminance in those primaries, `dot(c, frame.luminance)`:
         /// (0.2126, 0.7152, 0.0722) for BT.709, (0.2627, 0.6780, 0.0593) for BT.2020.
         luminance: [f32; 3],
-        @pad padding: u32,
+        /// The moon's phase, vanilla's `Level.getMoonPhase()`: the day count (the world's time / 24000)
+        /// mod 8, 0 full moon, 1 waning gibbous, 2 third quarter, 3 waning crescent, 4 new moon,
+        /// 5 waxing crescent, 6 first quarter, 7 waxing gibbous. 0 in a dimension with no default
+        /// clock (the Nether), whose time vanilla reads as 0.
+        moon_phase: u32,
     }
 }
 
@@ -390,14 +394,16 @@ mod tests {
     #[test]
     fn frame_fields_carry_their_docs() {
         let wgsl = Frame::WGSL;
-        assert_eq!(wgsl.fields.len(), 56);
+        assert_eq!(wgsl.fields.len(), 57);
         assert!(wgsl.fields.iter().all(|f| !f.doc.trim().is_empty()));
-        // 0.1's 49 fields, then 0.2's seven: `luminance` is a `vec3`, on the next 16 bytes.
+        // 0.1's 49 fields, then 0.2's eight: `luminance` is a `vec3`, on the next 16 bytes,
+        // and `moon_phase` fills its last four.
         assert_eq!(
             std::mem::size_of::<Frame>(),
             6 * 64 + 15 * 16 + 8 * 16 + 3 * 16
         );
         assert_eq!(Frame::OFFSETS[55], std::mem::size_of::<Frame>() - 16);
+        assert_eq!(Frame::OFFSETS[56], std::mem::size_of::<Frame>() - 4);
         assert_eq!(Frame::OFFSETS[Frame::FIELDS_0_1], 6 * 64 + 15 * 16 + 8 * 16);
         assert_eq!(
             Frame::line(crate::Api::V0_1).fields.len(),

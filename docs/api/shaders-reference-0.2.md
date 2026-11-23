@@ -466,6 +466,7 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 | `black_level` | `f32` | 768 | The display's black in nits (HDR's Black Level); 0 in SDR. |
 | `primaries` | `u32` | 772 | The primaries of this pack's colours (`[frame] primaries`): 0 BT.709, 1 BT.2020. |
 | `luminance` | `vec3<f32>` | 784 | The weights that give a colour's luminance in those primaries, `dot(c, frame.luminance)`: (0.2126, 0.7152, 0.0722) for BT.709, (0.2627, 0.6780, 0.0593) for BT.2020. |
+| `moon_phase` | `u32` | 796 | The moon's phase, vanilla's `Level.getMoonPhase()`: the day count (the world's time / 24000) mod 8, 0 full moon, 1 waning gibbous, 2 third quarter, 3 waning crescent, 4 new moon, 5 waxing crescent, 6 first quarter, 7 waxing gibbous. 0 in a dimension with no default clock (the Nether), whose time vanilla reads as 0. |
 
 ## Anti-aliasing
 

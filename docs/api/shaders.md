@@ -256,6 +256,10 @@ draws them itself (the material stage covers terrain only). The first-person han
 
 ## Changelog
 
+- 2026-11-23: API 0.2 (additions, experimental): `Frame.moon_phase` after `luminance`, vanilla's
+  `Level.getMoonPhase()` (0 full moon … 4 new moon … 7), from the world's day count; 0 in a dimension with no
+  default clock. It takes the four bytes after `luminance` that were padding, so the uploaded `Frame` buffer keeps
+  its size. API 0.1 is unchanged.
 - 2026-11-13: API 0.2 (**breaking**, experimental): the material stage keeps the engine's coverage unless the pack
   declares it, with `[material] coverage`, `"engine"` (the default) or `"pack"`. Under `"engine"` solid and cutout
   terrain's alpha test reads the texture's alpha, not the returned one, translucent terrain is cut on the texture's

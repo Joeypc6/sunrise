@@ -1623,7 +1623,8 @@ pub fn frame_inputs(
         primaries: Primaries::Bt709 as u32,
         luminance_gap: [0; 2],
         luminance: Primaries::Bt709.luminance(),
-        padding: 0,
+        // `Level.getMoonPhase()`: the day count mod 8 (`DimensionType.moonPhase`).
+        moon_phase: pack.day_time.div_euclid(24_000).rem_euclid(8) as u32,
     }
 }
 
@@ -1758,6 +1759,31 @@ mod tests {
     use sunrise_shader_api::{MANIFEST, Pack, check};
 
     const SDR: DisplayValues = DisplayValues::SDR;
+
+    /// `Level.getMoonPhase()` from the world's absolute time: a full moon on day 0, a new moon
+    /// on day 4, and the cycle over again on day 8, however far into the day.
+    #[test]
+    fn the_moon_phase_follows_the_day_count() {
+        let hud = crate::hud::HudBatch::scratch([4, 4]);
+        let mut frame = crate::gfx::frame_tests::frame(&hud);
+        let phase = |frame: &mut Frame, day_time: i64| {
+            frame.pack.day_time = day_time;
+            frame_inputs(frame, [4, 4], 0.0, 0, None).moon_phase
+        };
+        for (day_time, want) in [
+            (0, 0),
+            (23_999, 0),
+            (24_000, 1),
+            (4 * 24_000, 4),
+            (4 * 24_000 + 18_000, 4),
+            (7 * 24_000, 7),
+            (8 * 24_000, 0),
+            (1_000 * 24_000 + 6_000, 0),
+            (1_003 * 24_000, 3),
+        ] {
+            assert_eq!(phase(&mut frame, day_time), want, "day time {day_time}");
+        }
+    }
 
     #[test]
     fn wetness_rises_slower_than_it_dries() {
