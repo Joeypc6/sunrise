@@ -1,8 +1,8 @@
 //! Lexical, transactional GUI drawing.
 
 use crate::{
-    Identifier, ItemStack, StackWriteError, Text, TextLayoutError, TextLayoutSize, TextLayoutSpec,
-    text::TextFormError,
+    FluidStack, Identifier, ItemStack, StackWriteError, Text, TextLayoutError, TextLayoutSize,
+    TextLayoutSpec, text::TextFormError,
 };
 
 use super::hud_layout::{Blend, PoseOp};
@@ -76,6 +76,8 @@ pub enum GuiDrawError {
     Stack(StackWriteError),
     /// No sprite is present at the requested GUI or packed-atlas id.
     UnknownSprite,
+    /// The fluid is not registered (an unresolved saved fluid), so it has no look to draw.
+    UnknownFluid,
     /// `Vignette` and `Nausea` are only available for raw texture blits.
     UnsupportedSpriteBlend,
     /// The whole sprite size in a partial sprite blit was not positive on both axes.
@@ -96,6 +98,7 @@ impl std::fmt::Display for GuiDrawError {
             Self::TextLayout(error) => return write!(f, "GUI draw: {error}"),
             Self::Stack(error) => return write!(f, "GUI draw stack: {error:?}"),
             Self::UnknownSprite => "unknown GUI draw sprite",
+            Self::UnknownFluid => "unknown GUI draw fluid",
             Self::UnsupportedSpriteBlend => "this blend is not supported for GUI sprites",
             Self::BadSpriteRegion => "GUI sprite size must be positive",
             Self::UnknownTexture => "unknown GUI draw texture",
@@ -231,6 +234,19 @@ pub trait GuiCanvas {
 
     /// Draw a sprite by its exact packed atlas name (not its GUI id) at `[x, y, w, h]`.
     fn atlas_sprite(&mut self, name: &str, dst: [f32; 4], argb: u32) -> Result<(), GuiDrawError>;
+
+    /// Draw `fluid` filling `rect = [x, y, w, h]` the way the recipe panel draws a fluid, as a
+    /// recipe viewer's or a tank screen's fluid does (NeoForge `IClientFluidTypeExtensions`:
+    /// `getStillTexture`, `getTintColor`): the sprite its look (`data/<mod>/sunrise/fluid/<name>.json`)
+    /// names, tiled at its own pixel size from the top left of `rect` and cut at the right and
+    /// bottom edges, multiplied by the look's tint (vanilla water and lava, and a registered fluid
+    /// with no look, have no sprite and fill with their colour, flat: 0xFF3F76E4, 0xFFFF6A00,
+    /// else 0xFF9A9A9A when the look gives no tint). The sorted corners and the pose and scissor
+    /// apply as for [`Self::fill`]. The stack's amount and components do not change the look, and
+    /// no tint provider reads them yet. A rectangle of more than 4096 tiles stretches one sprite
+    /// instead of tiling. A fluid that is not registered is refused with
+    /// [`GuiDrawError::UnknownFluid`]; a non-finite `rect` with [`GuiDrawError::NotFinite`].
+    fn fluid(&mut self, fluid: &FluidStack, rect: [f32; 4]) -> Result<(), GuiDrawError>;
 
     /// Draw a region of a texture packed in the GUI atlas at `[x, y, w, h]`: `texture` is the
     /// packed name (a path under `textures/`, without `.png`) or a registered atlas's sprite

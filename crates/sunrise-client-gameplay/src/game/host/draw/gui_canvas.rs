@@ -3,8 +3,8 @@
 use super::text_layout::LabelLayout;
 use crate::game::ClientGame;
 use mod_api::{
-    GuiBlitRegion, GuiCanvas, GuiDrawError, GuiSpriteRegion, GuiVertex, ItemStack, Text,
-    TextLayoutSize, TextLayoutSpec,
+    FluidStack, GuiBlitRegion, GuiCanvas, GuiDrawError, GuiSpriteRegion, GuiVertex, ItemStack,
+    Text, TextLayoutSize, TextLayoutSpec,
 };
 use sunrise_client::{
     hud::{GuiSprite, HudAtlas, HudBatch},
@@ -192,6 +192,9 @@ fn tint_vertices(batch: &mut HudBatch, start: usize, tint: u32) {
         vertex.color = multiply_abgr(vertex.color, tint);
     }
 }
+
+/// Past this many tiles a fluid fill stretches one sprite instead of tiling it.
+const MAX_FLUID_TILES: f32 = 4096.0;
 
 /// Two packed colours multiplied channel by channel, as a shader multiplies a vertex colour by
 /// `ColorModulator`: `u32::MAX` leaves `color` unchanged.
@@ -488,6 +491,66 @@ impl GuiCanvas for GameGuiCanvas<'_, '_> {
             color: argb,
         };
         self.paint(|batch, _| quad.paint(batch))
+    }
+
+    fn fluid(&mut self, fluid: &FluidStack, rect: [f32; 4]) -> Result<(), GuiDrawError> {
+        let [x1, y1] = rect_end(rect)?;
+        if fluid.key().is_none() {
+            return Err(GuiDrawError::UnknownFluid);
+        }
+        let id = mod_api::__private::fluid_identity_name(&fluid.fluid);
+        let look = sunrise_client::mod_content::fluid_look(&id);
+        let tint = crate::game::native_panel_recipes::fluid_tint(
+            &id,
+            look.as_ref().and_then(|look| look.tint),
+        );
+        let sprite =
+            look.and_then(|look| look.sprite)
+                .and_then(|name| match self.atlas.gui_lookup(&name) {
+                    Some(GuiSprite::Present { rect, .. }) if rect.w > 0 && rect.h > 0 => {
+                        Some((name, rect))
+                    }
+                    _ => None,
+                });
+        let (left, right) = (rect[0].min(x1), rect[0].max(x1));
+        let (top, bottom) = (rect[1].min(y1), rect[1].max(y1));
+        self.paint(|batch, atlas| {
+            let color = abgr(tint);
+            let Some((name, tile)) = sprite else {
+                batch.fill_quad(
+                    atlas,
+                    [[left, top], [right, top], [right, bottom], [left, bottom]],
+                    color,
+                );
+                return;
+            };
+            let start = batch.vertices.len();
+            let (tw, th) = (tile.w as f32, tile.h as f32);
+            let (width, height) = (right - left, bottom - top);
+            let (columns, rows) = ((width / tw).ceil(), (height / th).ceil());
+            if columns * rows > MAX_FLUID_TILES {
+                batch.rect_uv(left, top, width, height, tile, color);
+            } else {
+                let (du, dv) = (tile.u1 - tile.u0, tile.v1 - tile.v0);
+                let mut y = top;
+                while y < bottom {
+                    let h = th.min(bottom - y);
+                    let mut x = left;
+                    while x < right {
+                        let w = tw.min(right - x);
+                        let cut = crate::hud::Rect {
+                            u1: tile.u0 + du * w / tw,
+                            v1: tile.v0 + dv * h / th,
+                            ..tile
+                        };
+                        batch.rect_uv(x, y, w, h, cut, color);
+                        x += tw;
+                    }
+                    y += th;
+                }
+            }
+            batch.bind_gui_atlas(start, atlas, &name);
+        })
     }
 
     fn blit(
@@ -1290,6 +1353,179 @@ mod tests {
                 ([10.0, 26.0], 0x0099_8877),
                 ([10.0, 26.0], 0x0099_8877),
             ]
+        );
+    }
+
+    /// Water's look as a mod's `data/minecraft/sunrise/fluid/water.json` would set it, for the
+    /// duration of `check`: the global look table is restored afterwards, even on a panic.
+    fn with_water_look(sprite: Option<&str>, tint: Option<u32>, check: impl FnOnce()) {
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                sunrise_client::mod_content::set_fluid_looks(&[]);
+            }
+        }
+        let mut content = sunrise_mod_package::content::Content::declared("minecraft");
+        content
+            .fluids
+            .push(sunrise_mod_package::content::FluidLook {
+                id: "minecraft:water".into(),
+                sprite: sprite.map(Into::into),
+                tint,
+                world: None,
+                bucket_item: None,
+                measures: Default::default(),
+            });
+        sunrise_client::mod_content::set_fluid_looks(&[sunrise_client::mod_content::ContentMod {
+            id: "minecraft".into(),
+            content,
+            jars: Vec::new(),
+        }]);
+        let _restore = Restore;
+        check();
+    }
+
+    fn water(amount: u32) -> mod_api::FluidStack {
+        mod_platform::__private::part_tests::game_thread();
+        mod_api::FluidStack::new(
+            mod_api::__private::fluid_key("minecraft:water").unwrap(),
+            amount,
+        )
+    }
+
+    /// A fluid with no sprite fills the rectangle with its colour, as the recipe panel's well
+    /// does, and an unregistered fluid and a non-finite rectangle draw nothing.
+    #[test]
+    fn a_fluid_without_a_sprite_fills_with_its_tint_and_refuses_unknown_fluids() {
+        let atlas = HudAtlas::build(&ResourceSource::directory(
+            "/nonexistent/sunrise-test-assets".into(),
+        ))
+        .unwrap();
+        let stack = water(1000);
+        let mut batch = HudBatch::scratch([320, 240]);
+        with_water_look(None, Some(0xFF11_2233), || {
+            GameGuiCanvas::draw(&mut batch, &atlas, None, None, &mut |canvas| {
+                canvas.scope(&[PoseOp::Translate(10.0, 20.0)], None, &mut |scope| {
+                    // Corners given reversed sort as `fill`'s do.
+                    scope.fluid(&stack, [16.0, 16.0, -16.0, -16.0])
+                })
+            })
+            .unwrap();
+        });
+        assert_eq!(batch.vertices.len(), 6);
+        assert!(batch.vertices.iter().all(|v| v.color == abgr(0xFF11_2233)));
+        let xs: Vec<f32> = batch.vertices.iter().map(|v| v.pos[0]).collect();
+        let ys: Vec<f32> = batch.vertices.iter().map(|v| v.pos[1]).collect();
+        assert_eq!(xs.iter().cloned().fold(f32::MAX, f32::min), 10.0);
+        assert_eq!(xs.iter().cloned().fold(f32::MIN, f32::max), 26.0);
+        assert_eq!(ys.iter().cloned().fold(f32::MAX, f32::min), 20.0);
+        assert_eq!(ys.iter().cloned().fold(f32::MIN, f32::max), 36.0);
+
+        // No look at all: vanilla water's own colour.
+        let mut batch = HudBatch::scratch([320, 240]);
+        GameGuiCanvas::draw(&mut batch, &atlas, None, None, &mut |canvas| {
+            canvas.fluid(&stack, [0.0, 0.0, 4.0, 4.0])
+        })
+        .unwrap();
+        assert!(batch.vertices.iter().all(|v| v.color == abgr(0xFF3F_76E4)));
+
+        let missing = mod_api::FluidStack {
+            fluid: mod_api::FluidIdentity::of_name("missing:oil").unwrap(),
+            amount: 1000,
+            components: None,
+        };
+        let mut batch = HudBatch::scratch([320, 240]);
+        GameGuiCanvas::draw(&mut batch, &atlas, None, None, &mut |canvas| {
+            assert_eq!(
+                canvas.fluid(&missing, [0.0, 0.0, 4.0, 4.0]),
+                Err(GuiDrawError::UnknownFluid)
+            );
+            assert_eq!(
+                canvas.fluid(&stack, [0.0, f32::NAN, 4.0, 4.0]),
+                Err(GuiDrawError::NotFinite)
+            );
+            assert_eq!(
+                canvas.fluid(&stack, [f32::MAX, f32::MAX, f32::MAX, f32::MAX]),
+                Err(GuiDrawError::NotFinite)
+            );
+            Ok(())
+        })
+        .unwrap();
+        assert!(batch.vertices.is_empty());
+    }
+
+    /// A fluid's sprite tiles at its own pixel size from the top left, the right and bottom
+    /// tiles cut, each multiplied by the tint, in the canvas pose.
+    #[test]
+    fn a_fluid_sprite_tiles_from_the_top_left_and_cuts_the_last_tiles() {
+        let mut atlas = HudAtlas::build(&ResourceSource::directory(
+            "/nonexistent/sunrise-test-assets".into(),
+        ))
+        .unwrap();
+        atlas.gui.insert(
+            "test:fluid_still".into(),
+            GuiSprite::Present {
+                rect: Rect {
+                    u0: 0.0,
+                    v0: 0.0,
+                    u1: 0.5,
+                    v1: 0.5,
+                    w: 16,
+                    h: 16,
+                },
+                scaling: None,
+            },
+        );
+        let stack = water(1000);
+        let mut batch = HudBatch::scratch([320, 240]);
+        with_water_look(Some("test:fluid_still"), Some(0xFF11_2233), || {
+            GameGuiCanvas::draw(&mut batch, &atlas, None, None, &mut |canvas| {
+                canvas.scope(&[PoseOp::Translate(100.0, 0.0)], None, &mut |scope| {
+                    scope.fluid(&stack, [0.0, 0.0, 24.0, 20.0])
+                })
+            })
+            .unwrap();
+        });
+        // 2 columns by 2 rows, six vertices each.
+        assert_eq!(batch.vertices.len(), 24);
+        assert!(batch.vertices.iter().all(|v| v.color == abgr(0xFF11_2233)));
+        let quad = |i: usize| &batch.vertices[i * 6..i * 6 + 6];
+        let extent = |q: &[crate::hud::HudVertex]| {
+            let min =
+                |f: fn(&crate::hud::HudVertex) -> f32| q.iter().map(f).fold(f32::MAX, f32::min);
+            let max =
+                |f: fn(&crate::hud::HudVertex) -> f32| q.iter().map(f).fold(f32::MIN, f32::max);
+            (
+                [
+                    min(|v| v.pos[0]),
+                    min(|v| v.pos[1]),
+                    max(|v| v.pos[0]),
+                    max(|v| v.pos[1]),
+                ],
+                [
+                    min(|v| v.uv[0]),
+                    min(|v| v.uv[1]),
+                    max(|v| v.uv[0]),
+                    max(|v| v.uv[1]),
+                ],
+            )
+        };
+        // The first tile is whole; the next is cut to 8 of 16 pixels, half the sprite's u span.
+        assert_eq!(
+            extent(quad(0)),
+            ([100.0, 0.0, 116.0, 16.0], [0.0, 0.0, 0.5, 0.5])
+        );
+        assert_eq!(
+            extent(quad(1)),
+            ([116.0, 0.0, 124.0, 16.0], [0.0, 0.0, 0.25, 0.5])
+        );
+        assert_eq!(
+            extent(quad(2)),
+            ([100.0, 16.0, 116.0, 20.0], [0.0, 0.0, 0.5, 0.125])
+        );
+        assert_eq!(
+            extent(quad(3)),
+            ([116.0, 16.0, 124.0, 20.0], [0.0, 0.0, 0.25, 0.125])
         );
     }
 }
