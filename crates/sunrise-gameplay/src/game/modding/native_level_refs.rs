@@ -900,6 +900,79 @@ impl<'g> ServerGame<'g> {
         let _ = self.server_process_level_events();
         true
     }
+    /// `LevelAccessor.scheduleTick(pos, block, delay, priority)` in the level in place: the
+    /// queue a due tick runs from. Inside a transaction the tick is queued at commit.
+    pub(in crate::game) fn level_schedule_block_tick(
+        &mut self,
+        level: LevelRef,
+        pos: [i32; 3],
+        block: mod_api::BlockKey,
+        delay: i32,
+        priority: mod_api::TickPriority,
+    ) -> Result<bool, mod_api::LevelWriteError> {
+        use mod_api::TickPriority as Api;
+        use sunrise_core::ticks::{ScheduleResult, TickPriority};
+        if !self.native_level_write_position(level, pos)? {
+            return Ok(false);
+        }
+        let priority = match priority {
+            Api::ExtremelyHigh => TickPriority::ExtremelyHigh,
+            Api::VeryHigh => TickPriority::VeryHigh,
+            Api::High => TickPriority::High,
+            Api::Low => TickPriority::Low,
+            Api::VeryLow => TickPriority::VeryLow,
+            Api::ExtremelyLow => TickPriority::ExtremelyLow,
+            _ => TickPriority::Normal,
+        };
+        if let Some(mut host) = super::journal_level_write::JournalLevelWrite::new(self, level) {
+            return Ok(host.schedule_block_tick_with(pos, block, delay, priority));
+        }
+        let Some(block) = sunrise_gameplay_common::game::api_values::behavior_block(
+            block,
+            self.common.res.behaviours(),
+        ) else {
+            return Ok(false);
+        };
+        let time = self.common.world.game_time;
+        Ok(self
+            .common
+            .block_ticks
+            .schedule_block(time, block_pos(pos), block, delay, priority)
+            != ScheduleResult::MissingChunk)
+    }
+    /// `LevelAccessor.scheduleTick(pos, fluid, delay)` in the level in place, as
+    /// `level_schedule_block_tick`.
+    pub(in crate::game) fn level_schedule_fluid_tick(
+        &mut self,
+        level: LevelRef,
+        pos: [i32; 3],
+        fluid: mod_api::FluidKey,
+        delay: i32,
+    ) -> Result<bool, mod_api::LevelWriteError> {
+        use sunrise_core::ticks::ScheduleResult;
+        if !self.native_level_write_position(level, pos)? {
+            return Ok(false);
+        }
+        let Some(kind) =
+            sunrise_gameplay_common::game::native_world_read_common::engine_fluid_kind(fluid)
+        else {
+            return Ok(false);
+        };
+        let time = self.common.world.game_time;
+        if self.has_level_transaction() {
+            let name = mod_api::__private::fluid_id(fluid).unwrap_or_default();
+            let mut host = super::journal_level_write::JournalLevelWrite::new(self, level)
+                .ok_or(mod_api::LevelWriteError::Unavailable)?;
+            return Ok(mod_api::LevelTicksHost::schedule_fluid_tick(
+                &mut host, pos, name, delay,
+            ));
+        }
+        Ok(self
+            .common
+            .block_ticks
+            .schedule_fluid(time, block_pos(pos), kind, delay)
+            != ScheduleResult::MissingChunk)
+    }
     /// `tickChunk`'s random tick of `pos` now (`Behaviours::random_tick`). False as for
     /// `level_block_tick`.
     pub(in crate::game) fn level_block_random_tick(

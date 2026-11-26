@@ -1306,6 +1306,28 @@ pub enum ClipBlock {
     Visual,
 }
 
+/// The order a scheduled tick runs in among those due on the same game tick
+/// (`net.minecraft.world.ticks.TickPriority`): lower runs first, `Normal` is the default.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+pub enum TickPriority {
+    /// `EXTREMELY_HIGH` (-3).
+    ExtremelyHigh,
+    /// `VERY_HIGH` (-2).
+    VeryHigh,
+    /// `HIGH` (-1).
+    High,
+    /// `NORMAL` (0), what `scheduleTick(pos, block, delay)` uses.
+    #[default]
+    Normal,
+    /// `LOW` (1).
+    Low,
+    /// `VERY_LOW` (2).
+    VeryLow,
+    /// `EXTREMELY_LOW` (3).
+    ExtremelyLow,
+}
+
 /// Fluid mode for a level ray (`ClipContext.Fluid`).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]

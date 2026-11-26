@@ -53,6 +53,35 @@ pub trait LevelTickingBackendMut {
     /// tick, with the same random draws and level events. False as for `block_tick`.
     fn level_block_random_tick(&mut self, level: LevelRef, pos: [i32; 3]) -> bool;
     /// Side: server.
+    /// Queue a tick of `block` at `pos` in `delay` game ticks (`LevelAccessor.scheduleTick(pos,
+    /// block, delay, priority)`, which `ServerLevel.getBlockTicks().schedule` backs): the queue
+    /// `update_shape`'s `schedule_block_tick` fills, so the tick is saved with its chunk, runs in
+    /// tick order and is ignored when the block at `pos` is no longer `block` as it comes due.
+    /// `Ok(true)` when queued or already queued (vanilla keeps one tick per block, position and
+    /// trigger time). Inside a transaction the tick is queued when it commits.
+    /// `Ok(false)` for an unloaded or out-of-height position, a position a carrier transfer
+    /// holds and a block with no world form; `Err` for a stale handle, a client or a level not in
+    /// place.
+    fn level_schedule_block_tick(
+        &mut self,
+        level: LevelRef,
+        pos: [i32; 3],
+        block: BlockKey,
+        delay: i32,
+        priority: TickPriority,
+    ) -> Result<bool, LevelWriteError>;
+    /// Side: server.
+    /// Queue a tick of `fluid` at `pos` in `delay` game ticks (`LevelAccessor.scheduleTick(pos,
+    /// fluid, delay)`), the queue `level_fluid_tick`'s due tick comes from. Results as for
+    /// `schedule_block_tick`; `Ok(false)` also for a fluid with no world form.
+    fn level_schedule_fluid_tick(
+        &mut self,
+        level: LevelRef,
+        pos: [i32; 3],
+        fluid: FluidKey,
+        delay: i32,
+    ) -> Result<bool, LevelWriteError>;
+    /// Side: server.
     /// Lend the named level's live stream to `draw`. Run no callback when the level is
     /// unavailable. See [`LevelRef::with_random`].
     #[decline_unavailable]

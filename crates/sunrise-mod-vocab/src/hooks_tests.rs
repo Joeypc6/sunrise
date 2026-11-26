@@ -1041,6 +1041,10 @@ fn world_data_and_tick_queries_take_their_hosts(
     let _: bool = level.set_map_data(server, 0, &[0; 128 * 128]);
     let _: bool = level.block_tick(server, [0, 64, 0]);
     let _: bool = level.block_random_tick(server, [0, 64, 0]);
+    let _: Result<bool, LevelWriteError> =
+        level.schedule_block_tick(server, [0, 64, 0], BlockKey(0), 60, TickPriority::Normal);
+    let _: Result<bool, LevelWriteError> =
+        level.schedule_fluid_tick(server, [0, 64, 0], FluidKey(0), 5);
     let _: Option<[i32; 3]> = level.lightning_target(server, [0, 64, 0]);
     let _: bool = level.has_water_ticket(read, [0, 64, 0]);
     if let Some(ticket) = level.add_water_ticket(server, [0, 64, 0], [5, 65, 5]) {

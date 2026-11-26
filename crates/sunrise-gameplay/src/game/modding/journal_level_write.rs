@@ -308,9 +308,15 @@ impl LevelRandomHost for JournalLevelWrite<'_, '_> {
     }
 }
 
-impl LevelTicksHost for JournalLevelWrite<'_, '_> {
-    #[inline]
-    fn schedule_block_tick(&mut self, [x, y, z]: [i32; 3], block: BlockKey, delay: i32) -> bool {
+impl JournalLevelWrite<'_, '_> {
+    /// `scheduleTick(pos, block, delay, priority)`, queued when the transaction commits.
+    pub(super) fn schedule_block_tick_with(
+        &mut self,
+        [x, y, z]: [i32; 3],
+        block: BlockKey,
+        delay: i32,
+        priority: TickPriority,
+    ) -> bool {
         let pos = BlockPos::new(x, y, z);
         let Some(block) = sunrise_gameplay_common::game::api_values::behavior_block(
             block,
@@ -320,7 +326,14 @@ impl LevelTicksHost for JournalLevelWrite<'_, '_> {
         };
         let level = super::Dim::from_id(self.level.dimension_id());
         self.game.block_ticks.blocks.chunk(pos.chunk()).is_some()
-            && self.queue(PendingWrite::BlockTick(level, pos, block, delay))
+            && self.queue(PendingWrite::BlockTick(level, pos, block, delay, priority))
+    }
+}
+
+impl LevelTicksHost for JournalLevelWrite<'_, '_> {
+    #[inline]
+    fn schedule_block_tick(&mut self, pos: [i32; 3], block: BlockKey, delay: i32) -> bool {
+        self.schedule_block_tick_with(pos, block, delay, TickPriority::Normal)
     }
     #[inline]
     fn schedule_fluid_tick(&mut self, [x, y, z]: [i32; 3], fluid: &str, delay: i32) -> bool {
@@ -557,14 +570,14 @@ impl ServerGame<'_> {
     /// or draining unrelated queued effects.
     fn publish_level_effect(&mut self, write: PendingWrite, deliver_now: bool) {
         match write {
-            PendingWrite::BlockTick(level, pos, block, delay) => {
+            PendingWrite::BlockTick(level, pos, block, delay, priority) => {
                 let _ = self.with_effect_level(level, |game| {
                     game.common.block_ticks.schedule_block(
                         game.common.world.game_time,
                         pos,
                         block,
                         delay,
-                        TickPriority::Normal,
+                        priority,
                     );
                 });
             }

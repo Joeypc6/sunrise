@@ -1044,3 +1044,75 @@ use sunrise_gameplay_common::game::transactions::TransactionsGameExt as _;
 use sunrise_gameplay_common::game::held_items::HeldItemsGameExt1 as _;
 
 use sunrise_gameplay_common::game::native_entity_refs_common::NativeEntityRefsCommonGameExt1 as _;
+
+/// `LevelRef::schedule_block_tick` and `schedule_fluid_tick` (#6125) queue into the level's own
+/// tick queue, at once or when the transaction commits, keep one tick for a repeat and refuse an
+/// unloaded position and a stale handle.
+#[test]
+#[ignore = "daily"]
+fn a_mod_schedules_block_and_fluid_ticks_in_the_level_queue() {
+    use mod_api::{LevelWriteError, TickPriority, WorldEpoch};
+    use sunrise_core::{
+        position::{BlockPos, ChunkPos},
+        ticks::TickTypeId,
+    };
+    use sunrise_world::fluid::FluidKind;
+
+    with_level(|game, level| {
+        game.block_ticks
+            .add_chunk(ChunkPos::new(0, 0), Default::default(), Default::default())
+            .unwrap();
+        let pos = BlockPos::new(AT[0], AT[1], AT[2]);
+        let ice = state(game, "minecraft:frosted_ice");
+        let ice_id = game.res.behaviours().block(ice);
+        let ice_key = mod_api::__private::block_key("minecraft:frosted_ice").unwrap();
+        let water_tick = TickTypeId(FluidKind::Water.tick_id());
+        let water = key("minecraft:water");
+
+        assert_eq!(
+            level.schedule_block_tick(game, AT, ice_key, 60, TickPriority::Normal),
+            Ok(true)
+        );
+        assert!(game.block_ticks.has_block_tick(pos, ice_id));
+        assert_eq!(
+            level.schedule_block_tick(game, AT, ice_key, 60, TickPriority::Normal),
+            Ok(true),
+            "a repeat is kept as the one tick"
+        );
+        assert_eq!(game.block_ticks.blocks.count(), 1);
+        assert_eq!(level.schedule_fluid_tick(game, AT, water, 5), Ok(true));
+        assert!(game.block_ticks.fluids.has_scheduled(pos, water_tick));
+
+        // An unloaded position queues nothing; a stale handle is an error.
+        assert_eq!(
+            level.schedule_block_tick(
+                game,
+                [1_000_000, 65, 1_000_000],
+                ice_key,
+                1,
+                TickPriority::Low
+            ),
+            Ok(false)
+        );
+        let stale = LevelRef::new(WorldEpoch::new(level.epoch().get() + 1), level.dimension());
+        assert_eq!(
+            stale.schedule_block_tick(game, AT, ice_key, 1, TickPriority::Normal),
+            Err(LevelWriteError::Stale)
+        );
+
+        // In a transaction the tick waits for the commit and an abort drops it.
+        let other = [AT[0] + 1, AT[1], AT[2]];
+        let other_pos = BlockPos::new(other[0], other[1], other[2]);
+        for commit in [false, true] {
+            game.storage_scope(|game, _| {
+                assert_eq!(
+                    level.schedule_block_tick(game, other, ice_key, 20, TickPriority::High),
+                    Ok(true)
+                );
+                assert!(!game.block_ticks.has_block_tick(other_pos, ice_id));
+                ((), commit)
+            });
+            assert_eq!(game.block_ticks.has_block_tick(other_pos, ice_id), commit);
+        }
+    });
+}
