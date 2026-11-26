@@ -500,18 +500,45 @@ impl GuiCanvas for GameGuiCanvas<'_, '_> {
         }
         let id = mod_api::__private::fluid_identity_name(&fluid.fluid);
         let look = sunrise_client::mod_content::fluid_look(&id);
-        let tint = crate::game::native_panel_recipes::fluid_tint(
-            &id,
-            look.as_ref().and_then(|look| look.tint),
-        );
-        let sprite =
-            look.and_then(|look| look.sprite)
-                .and_then(|name| match self.atlas.gui_lookup(&name) {
-                    Some(GuiSprite::Present { rect, .. }) if rect.w > 0 && rect.h > 0 => {
-                        Some((name, rect))
-                    }
-                    _ => None,
-                });
+        let look_tint = look.as_ref().and_then(|look| look.tint);
+        let present = |name: &str| {
+            match self.atlas.gui_lookup(name) {
+                Some(GuiSprite::Present { rect, .. }) => Some(rect),
+                _ => self.atlas.sprites.get(name).copied(),
+            }
+            .filter(|rect| rect.w > 0 && rect.h > 0)
+        };
+        let named = look
+            .and_then(|look| look.sprite)
+            .and_then(|name| present(&name).map(|rect| (name, rect)));
+        // With no look of its own, the block atlas's `<ns>:block/<path>_still` (vanilla water's
+        // and lava's still sprites, `ModelBakery.WATER_STILL` / `LAVA_STILL`), as a recipe
+        // viewer draws them: water times its biome-less default 0x3F76E4, lava untinted.
+        let still = || {
+            let (ns, path) = id.split_once(':')?;
+            let name = format!("{ns}:block/{path}_still");
+            present(&name).map(|rect| (name, rect))
+        };
+        let (sprite, tint) = match named {
+            Some(named) => (
+                Some(named),
+                crate::game::native_panel_recipes::fluid_tint(&id, look_tint),
+            ),
+            None => match still() {
+                Some(still) => (
+                    Some(still),
+                    look_tint.unwrap_or(if id == "minecraft:water" {
+                        0xFF3F76E4
+                    } else {
+                        0xFFFF_FFFF
+                    }),
+                ),
+                None => (
+                    None,
+                    crate::game::native_panel_recipes::fluid_tint(&id, look_tint),
+                ),
+            },
+        };
         let (left, right) = (rect[0].min(x1), rect[0].max(x1));
         let (top, bottom) = (rect[1].min(y1), rect[1].max(y1));
         self.paint(|batch, atlas| {
@@ -1456,6 +1483,58 @@ mod tests {
 
     /// A fluid's sprite tiles at its own pixel size from the top left, the right and bottom
     /// tiles cut, each multiplied by the tint, in the canvas pose.
+    /// A fluid with no look of its own draws the block atlas's still sprite: water's
+    /// `block/water_still` times 0x3F76E4, lava's `block/lava_still` untinted, tiled as a look's.
+    #[test]
+    fn a_vanilla_fluid_without_a_look_draws_its_still_sprite() {
+        let mut atlas = HudAtlas::build(&ResourceSource::directory(
+            "/nonexistent/sunrise-test-assets".into(),
+        ))
+        .unwrap();
+        let tile = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 0.5,
+            v1: 0.5,
+            w: 16,
+            h: 16,
+        };
+        for name in ["block/water_still", "block/lava_still"] {
+            atlas.gui.insert(
+                name.into(),
+                GuiSprite::Present {
+                    rect: tile,
+                    scaling: None,
+                },
+            );
+        }
+        let draw = |stack: &mod_api::FluidStack| {
+            let mut batch = HudBatch::scratch([320, 240]);
+            GameGuiCanvas::draw(&mut batch, &atlas, None, None, &mut |canvas| {
+                canvas.fluid(stack, [0.0, 0.0, 16.0, 16.0])
+            })
+            .unwrap();
+            batch.vertices
+        };
+        sunrise_client::mod_content::set_fluid_looks(&[]);
+        let water = draw(&water(1000));
+        assert_eq!(water.len(), 6, "one whole tile");
+        assert!(water.iter().all(|v| v.color == abgr(0xFF3F_76E4)));
+        assert!(
+            water.iter().any(|v| v.uv == [0.5, 0.5]),
+            "the sprite's uv, not a fill"
+        );
+        mod_platform::__private::part_tests::game_thread();
+        let lava = mod_api::FluidStack::new(
+            mod_api::__private::fluid_key("minecraft:lava").unwrap(),
+            1000,
+        );
+        let lava = draw(&lava);
+        assert_eq!(lava.len(), 6);
+        assert!(lava.iter().all(|v| v.color == abgr(0xFFFF_FFFF)));
+        assert!(lava.iter().any(|v| v.uv == [0.5, 0.5]));
+    }
+
     #[test]
     fn a_fluid_sprite_tiles_from_the_top_left_and_cuts_the_last_tiles() {
         let mut atlas = HudAtlas::build(&ResourceSource::directory(
