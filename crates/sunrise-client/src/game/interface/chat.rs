@@ -1570,6 +1570,20 @@ impl Game<'_> {
             super::packs::open_uri(&url);
         }
     }
+    /// A mod's `ClientHost::open_link`: `click_url`, but only while the game
+    /// handles the player's input (as the clipboard calls), only for an
+    /// `http` or `https` link, and false when nothing was shown or opened.
+    pub(super) fn open_link(&mut self, url: &str) -> bool {
+        if !self.native_window()
+            || !self.user_input.get()
+            || !self.settings.chat_links
+            || !sunrise_client::component::untrusted_http_url(url)
+        {
+            return false;
+        }
+        self.click_url(url.to_owned());
+        true
+    }
     /// `ConfirmLinkScreen` (untrusted): the link and its warning over the
     /// chat, answered yes to open it.
     fn link_prompt_layout(
@@ -2502,6 +2516,46 @@ mod tests {
                 &[Text::translate("sunrise.screenshot.canceled", &[])]
             )
         );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_mods_open_link_shows_the_prompt_only_for_a_web_link_while_input_is_handled() {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
+            game.settings.chat_links = true;
+            game.settings.chat_links_prompt = true;
+            let url = "https://example.com/quests";
+            // A tick, a frame or a packet: no player action, nothing shown.
+            assert!(!game.open_link(url));
+            assert_eq!(game.link_prompt, None);
+            // While a click is handled: the game's confirmation shows the link.
+            assert!(game.with_user_input(true, |game| game.open_link(url)));
+            assert_eq!(game.link_prompt.as_deref(), Some(url));
+            game.link_prompt = None;
+            // Only http and https, as an open_url text component.
+            for refused in [
+                "file:///etc/passwd",
+                "javascript:alert(1)",
+                "example.com",
+                "",
+            ] {
+                assert!(
+                    !game.with_user_input(true, |game| game.open_link(refused)),
+                    "{refused}"
+                );
+                assert_eq!(game.link_prompt, None, "{refused}");
+            }
+            // Chat Links off: vanilla's clickUrlAction does nothing.
+            game.settings.chat_links = false;
+            assert!(!game.with_user_input(true, |game| game.open_link(url)));
+            assert_eq!(game.link_prompt, None);
+            // A server has no window to show it on.
+            game.settings.chat_links = true;
+            game.options.execution_role =
+                crate::game::execution_role::ExecutionRole::DedicatedServer;
+            assert!(!game.with_user_input(true, |game| game.open_link(url)));
+        });
     }
 
     #[test]

@@ -44,6 +44,16 @@ pub trait ClientInputClientHost {
     /// `native_clipboard_text` reads it. False, with nothing copied, at any other moment or
     /// on a server; empty text copies nothing, as vanilla's.
     fn set_clipboard_text(&self, text: &str) -> bool;
+    /// Side: client.
+    /// Opens the web link `url` from a mod's own click handler, as `Screen.clickUrlAction`
+    /// does for a text component's `open_url`: the game's confirmation
+    /// (`ConfirmLinkScreen.confirmLinkNow`: open, copy or cancel) shows over the current
+    /// screen, and the link opens in the system browser on yes. With the Prompt on Links
+    /// option off it opens at once. Allowed on the same terms as `set_clipboard_text`: while
+    /// the game handles a key, mouse or typed-text event. False, with nothing shown or
+    /// opened, at any other moment, on a server, with the Chat Links option off, or for a
+    /// link that isn't an absolute `http` or `https` URL (`ExtraCodecs.UNTRUSTED_URI`).
+    fn open_link(&mut self, url: &str) -> bool;
 }
 
 /// The live client reads behind [`VanillaKeyMappingRef`] and [`ModKeyMappingRef`].

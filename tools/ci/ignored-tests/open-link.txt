@@ -1,0 +1,1 @@
+sunrise-client game::chat::tests::a_mods_open_link_shows_the_prompt_only_for_a_web_link_while_input_is_handled lib daily resources
