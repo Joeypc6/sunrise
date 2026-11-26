@@ -1,0 +1,10 @@
+ids = [
+    "method:prelude::ConfigHost::mod_file_read",
+    "method:prelude::ConfigHost::mod_file_write",
+    "method:prelude::ConfigHost::mod_file_remove",
+    "method:prelude::ConfigHost::mod_file_list",
+    "type:ModFolder",
+    "type:ModFileError",
+]
+why = "A mod reads and writes files in config/<namespace>/, <world>/<namespace>/ and the world's serverconfig/<namespace>-… files for its own id and every namespace its manifest owns, so a mod taking over another mod's ids also reaches its files at the paths existing packs and worlds use. Each call is checked before the disk is touched (ownership, a path that can't leave the folder, no symbolic link on the way, 16 MiB per file) and a write replaces the file atomically (#5476)."
+migrate = "Nothing to migrate. A mod that reached these folders with std::fs from config_dir or world_dir can call mod_file_read and mod_file_write instead."

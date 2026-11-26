@@ -46,6 +46,55 @@ pub trait ConfigHost {
     /// and servers only, not the instance). Nothing is created.
     fn instance_dir(&self) -> PathBuf;
     /// Side: both.
+    /// The bytes of the file at `path` (a relative path, `/` between its parts) in `folder` of
+    /// `namespace`: `config/<namespace>/<path>`, `<world>/<namespace>/<path>`, or
+    /// `<world>/serverconfig/<path>` for a `<namespace>-…` name. The calling mod may name its
+    /// own id and every namespace its manifest's `namespaces` owns, and so reads the files of
+    /// a mod it takes over at the paths existing packs and worlds use. Refused before the
+    /// disk is touched, with the [`ModFileError`] naming why: outside a mod's call, a namespace
+    /// it doesn't own, a path that could leave the folder (`..`, absolute, a drive or a
+    /// backslash), or no world open for a world folder. A path through a symbolic link is
+    /// refused, and so is a file over [`MAX_MOD_FILE_BYTES`].
+    fn mod_file_read(
+        &self,
+        folder: ModFolder,
+        namespace: &str,
+        path: &str,
+    ) -> Result<Vec<u8>, ModFileError>;
+    /// Side: both.
+    /// Replaces the file at `path` in `folder` of `namespace` with `bytes`, atomically: they
+    /// are written to a temporary file beside it, flushed to disk and renamed over it, so a
+    /// crash leaves the old file or the new one, never a part. Missing folders up to it are
+    /// made. Refused as [`Self::mod_file_read`] is, and for more than [`MAX_MOD_FILE_BYTES`].
+    fn mod_file_write(
+        &self,
+        folder: ModFolder,
+        namespace: &str,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<(), ModFileError>;
+    /// Side: both.
+    /// Removes the file at `path` in `folder` of `namespace`: true when one was removed, false
+    /// when none was there. Folders are left. Refused as [`Self::mod_file_read`] is.
+    fn mod_file_remove(
+        &self,
+        folder: ModFolder,
+        namespace: &str,
+        path: &str,
+    ) -> Result<bool, ModFileError>;
+    /// Side: both.
+    /// The names in the folder `dir` (`""` for the namespace's folder itself) of `folder` of
+    /// `namespace`, sorted, with a `/` after each folder's name; symbolic links are left out.
+    /// For [`ModFolder::ServerConfig`], `dir` must be `""` and only `<namespace>-…` files are
+    /// listed. An empty list when the folder isn't there. Refused as [`Self::mod_file_read`]
+    /// is, and for more than [`MAX_MOD_FILE_LIST`] names.
+    fn mod_file_list(
+        &self,
+        folder: ModFolder,
+        namespace: &str,
+        dir: &str,
+    ) -> Result<Vec<String>, ModFileError>;
+    /// Side: both.
     /// Read this side's live value of an owner-bound setting registered through
     /// [`SettingsRegistrar::register_setting`](crate::SettingsRegistrar::register_setting).
     /// Writes are the side's own (`set_setting` on `ClientHost` or `ServerHost`).

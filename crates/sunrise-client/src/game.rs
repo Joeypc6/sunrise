@@ -1549,6 +1549,8 @@ mod native_mob_wanted_position;
 mod native_mob_wanted_position_tests;
 #[path = "game/modding/native_mobs.rs"]
 mod native_mobs;
+#[path = "game/modding/native_mod_files.rs"]
+mod native_mod_files;
 #[path = "game/modding/native_model_3d.rs"]
 mod native_model_3d;
 #[path = "game/modding/native_motion.rs"]
