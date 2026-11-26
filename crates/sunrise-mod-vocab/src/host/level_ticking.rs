@@ -53,15 +53,21 @@ pub trait LevelTickingBackendMut {
     /// tick, with the same random draws and level events. False as for `block_tick`.
     fn level_block_random_tick(&mut self, level: LevelRef, pos: [i32; 3]) -> bool;
     /// Side: server.
-    /// Queue a tick of `block` at `pos` in `delay` game ticks (`LevelAccessor.scheduleTick(pos,
-    /// block, delay, priority)`, which `ServerLevel.getBlockTicks().schedule` backs): the queue
-    /// `update_shape`'s `schedule_block_tick` fills, so the tick is saved with its chunk, runs in
-    /// tick order and is ignored when the block at `pos` is no longer `block` as it comes due.
-    /// `Ok(true)` when queued or already queued (vanilla keeps one tick per block, position and
-    /// trigger time). Inside a transaction the tick is queued when it commits.
-    /// `Ok(false)` for an unloaded or out-of-height position, a position a carrier transfer
-    /// holds and a block with no world form; `Err` for a stale handle, a client or a level not in
-    /// place.
+    /// Queue a tick of `block` at `pos` in `delay` game ticks
+    /// (`ScheduledTickAccess.scheduleTick(pos, block, delay, priority)`, which `LevelAccessor`
+    /// inherits and `ServerLevel.getBlockTicks().schedule` backs): the queue `update_shape`'s
+    /// `schedule_block_tick` fills, so the tick is saved with its chunk, runs in tick order
+    /// (trigger tick, then priority, then the order scheduled) and is ignored when the block at
+    /// `pos` is no longer `block` as it comes due. `Ok(true)` when queued or already queued:
+    /// vanilla keeps one tick per block and position (`LevelChunkTicks.schedule`), so a repeat
+    /// with another delay or priority is dropped and the first keeps its deadline and priority.
+    /// Inside a transaction the tick is queued when it commits, and its delay counts from there.
+    /// `Ok(false)` when the position's chunk has no tick container (unloaded, or loaded with no
+    /// tick list yet), for a position a carrier transfer holds and for a block with no world
+    /// form. The height is not checked, as `LevelTicks.schedule` checks only the container.
+    /// `Err` for a stale handle, a client or a level not in place. The in-line hosts'
+    /// `LevelTicksHost::schedule_block_tick_with_priority` makes the same engine call into the
+    /// same queue with the same [`TickPriority`].
     fn level_schedule_block_tick(
         &mut self,
         level: LevelRef,
@@ -71,15 +77,17 @@ pub trait LevelTickingBackendMut {
         priority: TickPriority,
     ) -> Result<bool, LevelWriteError>;
     /// Side: server.
-    /// Queue a tick of `fluid` at `pos` in `delay` game ticks (`LevelAccessor.scheduleTick(pos,
-    /// fluid, delay)`), the queue `level_fluid_tick`'s due tick comes from. Results as for
-    /// `schedule_block_tick`; `Ok(false)` also for a fluid with no world form.
+    /// Queue a tick of `fluid` at `pos` in `delay` game ticks
+    /// (`ScheduledTickAccess.scheduleTick(pos, fluid, delay, priority)`), the queue
+    /// `level_fluid_tick`'s due tick comes from. Results as for `schedule_block_tick`, one tick
+    /// per fluid and position; `Ok(false)` also for a fluid with no world form.
     fn level_schedule_fluid_tick(
         &mut self,
         level: LevelRef,
         pos: [i32; 3],
         fluid: FluidKey,
         delay: i32,
+        priority: TickPriority,
     ) -> Result<bool, LevelWriteError>;
     /// Side: server.
     /// Lend the named level's live stream to `draw`. Run no callback when the level is

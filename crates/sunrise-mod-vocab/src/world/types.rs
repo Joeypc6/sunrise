@@ -1328,6 +1328,21 @@ pub enum TickPriority {
     ExtremelyLow,
 }
 
+impl TickPriority {
+    /// `TickPriority.getValue()`: -3 for `ExtremelyHigh` to 3 for `ExtremelyLow`, 0 for `Normal`.
+    pub const fn value(self) -> i32 {
+        match self {
+            Self::ExtremelyHigh => -3,
+            Self::VeryHigh => -2,
+            Self::High => -1,
+            Self::Normal => 0,
+            Self::Low => 1,
+            Self::VeryLow => 2,
+            Self::ExtremelyLow => 3,
+        }
+    }
+}
+
 /// Fluid mode for a level ray (`ClipContext.Fluid`).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
@@ -2135,13 +2150,40 @@ pub trait HitHost: LevelRandomHost {
 
 /// A `LevelReader` with vanilla's `ScheduledTickAccess`. Shape updates cannot write blocks.
 pub trait LevelTicksHost: LevelHost {
-    /// Schedule a block tick through `native_schedule_block_tick`.
+    /// Schedule a block tick through `native_schedule_block_tick`, at `TickPriority::Normal`
+    /// (`ScheduledTickAccess.scheduleTick(pos, block, delay)`).
     fn schedule_block_tick(&mut self, _pos: [i32; 3], _block: BlockKey, _delay: i32) -> bool {
         unimplemented!("LevelTicksHost::schedule_block_tick")
     }
-    /// Schedule a fluid tick through `native_schedule_fluid_tick`.
+    /// Schedule a fluid tick through `native_schedule_fluid_tick`, at `TickPriority::Normal`
+    /// (`ScheduledTickAccess.scheduleTick(pos, fluid, delay)`).
     fn schedule_fluid_tick(&mut self, _pos: [i32; 3], _fluid: &str, _delay: i32) -> bool {
         unimplemented!("LevelTicksHost::schedule_fluid_tick")
+    }
+    /// `schedule_block_tick` at `priority` (`ScheduledTickAccess.scheduleTick(pos, block, delay,
+    /// priority)`), as `DiodeBlock.checkTickOnNeighbor` schedules a diode's tick at `HIGH`,
+    /// `VERY_HIGH` or `EXTREMELY_HIGH` from `neighborChanged`. The same queue and the same
+    /// [`TickPriority`] as `LevelRef::schedule_block_tick`: among the ticks due on one game tick,
+    /// a higher priority runs first, then the earlier scheduled.
+    fn schedule_block_tick_with_priority(
+        &mut self,
+        _pos: [i32; 3],
+        _block: BlockKey,
+        _delay: i32,
+        _priority: TickPriority,
+    ) -> bool {
+        unimplemented!("LevelTicksHost::schedule_block_tick_with_priority")
+    }
+    /// `schedule_fluid_tick` at `priority` (`ScheduledTickAccess.scheduleTick(pos, fluid, delay,
+    /// priority)`): the same queue and type as `LevelRef::schedule_fluid_tick`.
+    fn schedule_fluid_tick_with_priority(
+        &mut self,
+        _pos: [i32; 3],
+        _fluid: &str,
+        _delay: i32,
+        _priority: TickPriority,
+    ) -> bool {
+        unimplemented!("LevelTicksHost::schedule_fluid_tick_with_priority")
     }
 }
 
