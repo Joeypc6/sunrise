@@ -723,3 +723,270 @@ fn mod_screen_open_replaces_vanilla_screens_overlays_and_mod_screens() {
         });
     });
 }
+
+/// Logs the screen hooks a sub-screen's transitions fire, as `kind id`.
+struct SubScreenProbe(Arc<Mutex<Vec<String>>>);
+#[mod_api::__subscriptions]
+impl Hooks for SubScreenProbe {
+    fn screen_opening(
+        &self,
+        _host: &dyn ClientHost,
+        event: &mut ScreenOpeningEvent<'_>,
+    ) -> Option<ScreenOpening> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("opening {}->{}", event.current.id, event.new.id));
+        None
+    }
+    fn screen_closing(&self, _host: &dyn ClientHost, event: &mut ScreenClosingEvent<'_>) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("closing {}", event.screen.id));
+    }
+    fn screen_init_post(
+        &self,
+        _host: &dyn ClientHost,
+        event: &mut mod_api::ScreenInitPostEvent<'_>,
+    ) {
+        self.0.lock().unwrap().push(format!(
+            "init {}:{}",
+            event.screen.id,
+            event.screen.mod_screen.unwrap_or("-")
+        ));
+    }
+}
+
+/// A headless client logged in to the overworld with the `SubScreenProbe` mod, the reader of
+/// what it sends, and the probe's log.
+fn with_sub_screen_game(
+    test: impl FnOnce(
+        &mut sunrise_client_gameplay::game::ClientGame<'_>,
+        &mut sunrise_protocol::connection::ConnReader,
+        &Arc<Mutex<Vec<String>>>,
+    ),
+) {
+    use sunrise_protocol::packets::play::{self, Clientbound as C};
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mods: Arc<[ModEntry]> = vec![ModEntry::new(
+        "probe",
+        Box::new(SubScreenProbe(log.clone())),
+    )]
+    .into();
+    with_mods(mods, || {
+        crate::game::server_side::native_entity_refs::tests::with_client_game(|game| {
+            let (mut reader, _writer) = crate::game::remote::tests::connect_menu_test(game);
+            game.handle_packet(C::Login(play::Login {
+                player_id: 7,
+                hardcore: false,
+                levels: vec!["minecraft:overworld".into()],
+                max_players: 20,
+                chunk_radius: 8,
+                simulation_distance: 8,
+                reduced_debug_info: false,
+                show_death_screen: true,
+                limited_crafting: false,
+                spawn: play::SpawnInfo {
+                    dimension_type: 0,
+                    dimension: "minecraft:overworld".into(),
+                    seed: 1,
+                    game_type: 0,
+                    previous_game_type: None,
+                    debug: false,
+                    flat: false,
+                    last_death: None,
+                    portal_cooldown: 0,
+                    sea_level: 63,
+                },
+                online_mode: false,
+                enforces_secure_chat: false,
+            }))
+            .unwrap();
+            game.handle_packet(C::PlayerPosition(play::PlayerPosition {
+                teleport: 1,
+                position: [0.5, 65.0, 0.5],
+                delta: [0.0; 3],
+                yaw: 0.0,
+                pitch: 0.0,
+                relatives: 0,
+            }))
+            .unwrap();
+            game.client.remote.as_mut().unwrap().level_load.finish();
+            sent_packets(&mut reader);
+            take(&log);
+            test(game, &mut reader, &log);
+        });
+    });
+}
+
+/// What the client sent since the last call.
+fn sent_packets(
+    reader: &mut sunrise_protocol::connection::ConnReader,
+) -> Vec<sunrise_protocol::packets::play::Serverbound> {
+    reader
+        .set_read_timeout(Some(std::time::Duration::from_millis(100)))
+        .unwrap();
+    let mut packets = Vec::new();
+    while let Ok((id, body)) = reader.recv() {
+        packets.extend(sunrise_protocol::packets::play::Serverbound::decode(id, &body).ok());
+    }
+    packets
+}
+
+/// The server opens a chest menu in window `container`; its container screen shows.
+fn open_chest(game: &mut sunrise_client_gameplay::game::ClientGame<'_>, container: i32) {
+    use sunrise_protocol::packets::play::{self, Clientbound as C};
+    let root = std::path::PathBuf::from(
+        std::env::var_os("SUNRISE_TEST_RESOURCES")
+            .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
+    );
+    let report = sunrise_protocol::registry::Builtin::find(&root)
+        .expect("the prepared resources carry registries.json");
+    let builtin = sunrise_protocol::registry::Builtin::load(&report).unwrap();
+    let menu = builtin
+        .get("minecraft:menu")
+        .unwrap()
+        .id("minecraft:generic_9x3")
+        .unwrap();
+    game.handle_packet(C::OpenScreen(play::OpenScreen {
+        container,
+        menu,
+        title: sunrise_core::nbt::Tag::String("Chest".into()),
+    }))
+    .unwrap();
+    assert_eq!(game.client.screen, Screen::Inventory);
+}
+
+/// #4264: `mod_screen_open_over_menu` opens a mod's screen over a chest's container screen and
+/// keeps the chest menu (`setScreen(new Screen(..))` with `containerMenu` untouched): nothing is
+/// sent, the window, its generation and the carried stack stay, and the covered container screen
+/// hears no `screen_closing`. A second open replaces the sub-screen, one level deep. Escape
+/// returns to the chest's container screen (`setScreen(parent)`) with nothing sent: opening for
+/// the container screen, closing for the sub-screen, and the container screen's init again.
+#[test]
+#[ignore = "daily"]
+fn a_mod_screen_over_a_menu_keeps_it_and_escape_returns_to_its_screen() {
+    with_sub_screen_game(|game, reader, log| {
+        // No window: refused as `mod_screen_open` is.
+        open_chest(game, 5);
+        assert!(!game.mod_screen_open_over_menu("mod_a"));
+        assert_eq!(game.client.screen, Screen::Inventory);
+        assert!(game.close_screen());
+        sent_packets(reader);
+        take(log);
+
+        // No menu the server opened: the world, then the player's own inventory.
+        assert!(!game.open_mod_screen_over_menu("mod_a"));
+        assert!(game.open_inventory());
+        assert_eq!(game.client.screen, Screen::Inventory);
+        take(log);
+        assert!(!game.open_mod_screen_over_menu("mod_a"));
+        assert_eq!(game.client.screen, Screen::Inventory);
+        assert!(take(log).is_empty());
+        assert!(game.close_screen());
+
+        open_chest(game, 5);
+        let kept = game.open_menu_key().expect("the chest menu is open");
+        assert_eq!(kept.0, 5);
+        let carried = Some(sunrise_client::items::ItemStack::new("minecraft:stone", 3));
+        game.carried = carried.clone();
+        sent_packets(reader);
+        take(log);
+
+        assert!(game.open_mod_screen_over_menu("mod_a"));
+        assert_eq!(game.client.screen, Screen::Mod);
+        assert_eq!(game.mod_screen(), Some("mod_a"));
+        assert_eq!(game.mod_screen_menu(), Some(kept));
+        assert_eq!(game.open_menu_key(), Some(kept), "the menu stays open");
+        assert_eq!(game.carried, carried);
+        assert_eq!(take(log), ["opening inventory->mod", "init mod:mod_a"]);
+        assert!(
+            sent_packets(reader).is_empty(),
+            "no container close goes out"
+        );
+
+        // The same mod's again: nothing changes.
+        assert!(game.open_mod_screen_over_menu("mod_a"));
+        assert!(take(log).is_empty());
+
+        // Another one replaces it, over the same menu.
+        assert!(game.open_mod_screen_over_menu("mod_b"));
+        assert_eq!(game.mod_screen(), Some("mod_b"));
+        assert_eq!(game.mod_screen_menu(), Some(kept));
+        assert_eq!(
+            take(log),
+            ["opening mod->mod", "closing mod", "init mod:mod_b"]
+        );
+
+        // Escape goes back to the chest's screen, the menu as it was.
+        assert!(game.close_screen());
+        assert_eq!(game.client.screen, Screen::Inventory);
+        assert_eq!(game.mod_screen(), None);
+        assert_eq!(game.mod_screen_menu(), None);
+        assert_eq!(game.open_menu_key(), Some(kept));
+        assert_eq!(game.carried, carried);
+        assert_eq!(
+            take(log),
+            ["opening mod->inventory", "closing mod", "init inventory:-"]
+        );
+        assert!(sent_packets(reader).is_empty(), "returning sends nothing");
+
+        // `mod_screen_close` returns the same way.
+        assert!(game.open_mod_screen_over_menu("mod_a"));
+        game.mod_screen_close("mod_a");
+        assert_eq!(game.client.screen, Screen::Inventory);
+        assert_eq!(game.open_menu_key(), Some(kept));
+        assert!(sent_packets(reader).is_empty());
+
+        // The chest's own Escape still closes the menu.
+        assert!(game.close_screen());
+        assert_eq!(game.open_menu_key(), None);
+        assert!(sent_packets(reader).iter().any(|p| matches!(
+            p,
+            sunrise_protocol::packets::play::Serverbound::ContainerClose(c) if c.container == 5
+        )));
+    });
+}
+
+/// #4264: a mod's screen over a menu ends with the menu. The server's container close closes it
+/// to the game with nothing sent back, and the player's death closes it to the death screen;
+/// neither leaves the kept menu behind.
+#[test]
+#[ignore = "daily"]
+fn the_menu_closing_closes_a_mod_screen_over_it() {
+    use sunrise_protocol::packets::play::{self, Clientbound as C};
+    with_sub_screen_game(|game, reader, log| {
+        open_chest(game, 5);
+        assert!(game.open_mod_screen_over_menu("mod_a"));
+        sent_packets(reader);
+        take(log);
+
+        game.handle_packet(C::ContainerClose(play::ContainerClose { container: 5 }))
+            .unwrap();
+        assert_eq!(game.client.screen, Screen::Playing);
+        assert_eq!(game.mod_screen(), None);
+        assert_eq!(game.mod_screen_menu(), None);
+        assert_eq!(game.open_menu_key(), None);
+        assert!(game.client.native_mod_screen_menu.is_none());
+        assert_eq!(take(log), ["closing mod"]);
+        assert!(
+            !sent_packets(reader)
+                .iter()
+                .any(|p| matches!(p, play::Serverbound::ContainerClose(_))),
+            "the server's close is not answered with another"
+        );
+
+        open_chest(game, 6);
+        assert!(game.open_mod_screen_over_menu("mod_a"));
+        game.handle_packet(C::SetHealth(play::SetHealth {
+            health: 0.0,
+            food: 20,
+            saturation: 5.0,
+        }))
+        .unwrap();
+        assert_eq!(game.client.screen, Screen::Dead);
+        assert_eq!(game.mod_screen(), None);
+        assert!(game.client.native_mod_screen_menu.is_none());
+    });
+}

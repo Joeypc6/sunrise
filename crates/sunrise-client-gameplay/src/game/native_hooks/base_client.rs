@@ -132,6 +132,76 @@ impl crate::game::ClientGame<'_> {
         self.apply_screen(Screen::Mod, Some(mod_id));
         self.mod_screen() == Some(mod_id)
     }
+    /// Opens mod `mod_id`'s own screen over the open menu's container screen, keeping the menu:
+    /// vanilla's `Minecraft.setScreen(new Screen(..))` with `player.containerMenu` untouched,
+    /// as AE2's `AEBaseScreen.switchToScreen` opens its sub-screens. The menu goes on syncing;
+    /// Escape, `close_screen` or `mod_screen_close` return to the same container screen
+    /// (`setScreen(parent)`), with the same menu, slots and carried stack and nothing sent. A
+    /// server close of the menu, or any other screen replacing it, ends it as it ends the
+    /// container screen. `screen_opening` fires; the covered container screen gets no
+    /// `screen_closing`. Opened from another such screen, it replaces that one (one level).
+    /// False, with nothing changed, where `mod_screen_open` refuses, with no menu the server
+    /// opened shown (the player's own inventory, creative, the world), with an overlay over the
+    /// container screen, or when `screen_opening` cancels or redirects it.
+    pub fn mod_screen_open_over_menu(&mut self, mod_id: &str) -> bool {
+        if self.client.renderer.0.is_none() || self.common.player.is_none() || self.remote_loading()
+        {
+            return false;
+        }
+        self.open_mod_screen_over_menu(mod_id)
+    }
+    /// `mod_screen_open_over_menu` once a window is up: the menu kept and the transition.
+    pub fn open_mod_screen_over_menu(&mut self, mod_id: &str) -> bool {
+        let over_sub_screen = self.mod_screen_menu().is_some();
+        let kept = if over_sub_screen {
+            self.mod_screen_menu()
+        } else if self.client.screen == Screen::Inventory && !self.screen_over_playing() {
+            self.open_menu_key()
+        } else {
+            None
+        };
+        let Some(kept) = kept else {
+            return false;
+        };
+        if over_sub_screen && self.mod_screen() == Some(mod_id) {
+            return true;
+        }
+        let mut owner = mod_id;
+        if self.screen_hooks_heard() {
+            let decision = {
+                let current = self.screen_change_view(self.client.screen);
+                let new = screen_view_for_mod(&self.screen_change_view(Screen::Mod), mod_id);
+                // The covered container screen stays: only a sub-screen replaced closes.
+                self.decide_screen(&current, &new, over_sub_screen, false)
+            };
+            match decision {
+                ScreenDecision::Keep => return false,
+                ScreenDecision::Vanilla(target) => {
+                    self.open_screen_target(target);
+                    return false;
+                }
+                ScreenDecision::ModScreen(other_mod) => owner = other_mod,
+                ScreenDecision::Open => {}
+            }
+        }
+        self.client.native_mod_screen_menu = Some(kept);
+        self.apply_screen(Screen::Mod, Some(owner));
+        self.mod_screen() == Some(mod_id)
+    }
+    /// The menu a mod's own screen keeps open under it (`mod_screen_open_over_menu`), as its
+    /// window id and generation: only while that screen shows and the menu is still open.
+    pub fn mod_screen_menu(&self) -> Option<(i32, u64)> {
+        let kept = self
+            .client
+            .native_mod_screen_menu
+            .filter(|_| self.client.screen == Screen::Mod)?;
+        (self.open_menu_key() == Some(kept)).then_some(kept)
+    }
+    /// The menu the server opened, as its window id and the client's generation of it.
+    pub fn open_menu_key(&self) -> Option<(i32, u64)> {
+        let menu = &self.client.remote.as_ref()?.menu;
+        Some((menu.as_ref()?.0, menu.generation))
+    }
     /// Change the colours of `biome` (`minecraft:plains`) on this client: the
     /// grass, foliage (leaves, vines), dry foliage (leaf litter) and water
     /// tints, 0xRRGGBB, as its biome file and the colormaps set them. Asked
