@@ -99,12 +99,22 @@ pub(crate) mod tests {
         });
     }
 
-    /// `LevelReader.isUnobstructed(state, pos, CollisionContext.empty())`: a standing armor stand
-    /// blocks a full block, does not block a slab whose top is below the stand's feet, a marker
-    /// stand blocks nothing, and a state with no collision shape is never obstructed.
+    /// `CollisionGetter.isUnobstructed(state, pos, CollisionContext.empty())`: a standing armor
+    /// stand blocks a full block, does not block a slab whose top is below the stand's feet, a
+    /// marker stand blocks nothing, and a state with no collision shape is never obstructed. A
+    /// parked level is read, a stale handle is `Err(Stale)` and a client is `Err(Unavailable)`.
+    /// Runs in its own process: `with_game` publishes process-wide game tables.
     #[test]
     #[ignore = "daily"]
     fn is_unobstructed_tests_the_supplied_states_shape_against_building_entities() {
+        sunrise_gameplay_common::game::in_own_process(
+            "game::native_state_shapes::tests::is_unobstructed_tests_the_supplied_states_shape_against_building_entities",
+            is_unobstructed_tests_the_supplied_states_shape_isolated,
+        );
+    }
+
+    fn is_unobstructed_tests_the_supplied_states_shape_isolated() {
+        use mod_api::LevelReadError;
         use sunrise_core::geometry::Vec3;
         sunrise_gameplay::game::native_entity_refs::tests::with_game(|game| {
             let level = game.level("minecraft:overworld").unwrap();
@@ -148,6 +158,26 @@ pub(crate) mod tests {
             marker.marker = true;
             game.armor_stands.push(marker);
             assert_eq!(level.is_unobstructed(game, pos, stone), Ok(true));
+            game.armor_stands.clear();
+
+            let stale = mod_api::LevelRef::new(
+                mod_api::WorldEpoch::new(level.epoch().get() + 1),
+                level.dimension(),
+            );
+            assert_eq!(
+                stale.is_unobstructed(game, pos, stone),
+                Err(LevelReadError::Stale)
+            );
+            // The Overworld stays readable while parked.
+            game.enter_level(sunrise_gameplay_common::game::Dim::Nether)
+                .unwrap();
+            assert_eq!(level.is_unobstructed(game, pos, stone), Ok(true));
+            game.options.execution_role =
+                sunrise_gameplay_common::game::execution_role::ExecutionRole::Client;
+            assert_eq!(
+                level.is_unobstructed(game, pos, stone),
+                Err(LevelReadError::Unavailable)
+            );
         });
     }
 }

@@ -13,7 +13,7 @@ use sunrise_gameplay_common::game::native_datapack_values::{
     datapack_active_world_entities_unobstructed,
 };
 use sunrise_gameplay_common::game::native_level_refs_common::NativeLevelRefsCommonGameExt1 as _;
-use sunrise_gameplay_common::game::native_state_shapes::collision_shape;
+use sunrise_gameplay_common::game::native_state_shapes::try_collision_shape;
 use sunrise_gameplay_common::game::tables::GameItems as _;
 use sunrise_level::world::World;
 use sunrise_world::registry::BlockStateId;
@@ -118,8 +118,9 @@ impl ServerGame<'_> {
 }
 
 impl ServerGame<'_> {
-    /// `LevelReader.isUnobstructed(state, pos, CollisionContext.empty())` in a server level:
-    /// whether no `blocksBuilding` entity is in the supplied state's collision shape at `pos`.
+    /// `CollisionGetter.isUnobstructed(state, pos, CollisionContext.empty())` in a server level:
+    /// whether no `blocksBuilding` entity is in the supplied state's empty-context collision
+    /// shape at `pos`. A shape that cannot be evaluated is `Err(Unavailable)`, not free.
     pub(in crate::game) fn level_is_unobstructed(
         &self,
         level: LevelRef,
@@ -127,11 +128,13 @@ impl ServerGame<'_> {
         state: BlockStateId,
     ) -> Result<bool, mod_api::LevelReadError> {
         let world = self.native_level_world_result(level)?;
-        let shape = collision_shape(self.common.collision, world, state, pos).moved(Vec3::new(
-            f64::from(pos[0]),
-            f64::from(pos[1]),
-            f64::from(pos[2]),
-        ));
+        let shape = try_collision_shape(self.common.collision, world, state, pos)
+            .ok_or(mod_api::LevelReadError::Unavailable)?
+            .moved(Vec3::new(
+                f64::from(pos[0]),
+                f64::from(pos[1]),
+                f64::from(pos[2]),
+            ));
         self.is_shape_unobstructed(level, world, &shape)
             .map_err(|_| mod_api::LevelReadError::Unavailable)
     }
