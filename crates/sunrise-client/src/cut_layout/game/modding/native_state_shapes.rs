@@ -98,4 +98,56 @@ pub(crate) mod tests {
             assert_eq!(game.world.block(pos[0], pos[1], pos[2]), before);
         });
     }
+
+    /// `LevelReader.isUnobstructed(state, pos, CollisionContext.empty())`: a standing armor stand
+    /// blocks a full block, does not block a slab whose top is below the stand's feet, a marker
+    /// stand blocks nothing, and a state with no collision shape is never obstructed.
+    #[test]
+    #[ignore = "daily"]
+    fn is_unobstructed_tests_the_supplied_states_shape_against_building_entities() {
+        use sunrise_core::geometry::Vec3;
+        sunrise_gameplay::game::native_entity_refs::tests::with_game(|game| {
+            let level = game.level("minecraft:overworld").unwrap();
+            let pos = [0, 64, 0];
+            let state = |name: &str| {
+                let id = game.pack.assets.registry.default_state(name).unwrap();
+                id.try_into_api().unwrap()
+            };
+            let (stone, slab, air) = (
+                state("minecraft:stone"),
+                state("minecraft:stone_slab"),
+                state("minecraft:air"),
+            );
+            for state in [stone, slab, air] {
+                assert_eq!(level.is_unobstructed(game, pos, state), Ok(true));
+            }
+            // Feet at y 64.6: above the slab's top (64.5), inside the full block.
+            game.armor_stands
+                .push(sunrise_sim::entities::ArmorStand::new(
+                    9101,
+                    Vec3::new(0.5, 64.6, 0.5),
+                    0.0,
+                ));
+            assert_eq!(level.is_unobstructed(game, pos, stone), Ok(false));
+            assert_eq!(level.is_unobstructed(game, pos, slab), Ok(true));
+            assert_eq!(level.is_unobstructed(game, pos, air), Ok(true));
+            assert_eq!(level.is_unobstructed(game, [4, 64, 0], stone), Ok(true));
+            // Feet at y 64.4: inside the slab's shape too.
+            game.armor_stands.clear();
+            game.armor_stands
+                .push(sunrise_sim::entities::ArmorStand::new(
+                    9102,
+                    Vec3::new(0.5, 64.4, 0.5),
+                    0.0,
+                ));
+            assert_eq!(level.is_unobstructed(game, pos, slab), Ok(false));
+            // `Entity.blocksBuilding` is false for a marker armor stand.
+            game.armor_stands.clear();
+            let mut marker =
+                sunrise_sim::entities::ArmorStand::new(9103, Vec3::new(0.5, 64.4, 0.5), 0.0);
+            marker.marker = true;
+            game.armor_stands.push(marker);
+            assert_eq!(level.is_unobstructed(game, pos, stone), Ok(true));
+        });
+    }
 }

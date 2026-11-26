@@ -1,0 +1,2 @@
+# LevelRef::is_unobstructed (#6036).
+sunrise-client cut_layout::game::native_state_shapes::tests::is_unobstructed_tests_the_supplied_states_shape_against_building_entities lib daily resources
