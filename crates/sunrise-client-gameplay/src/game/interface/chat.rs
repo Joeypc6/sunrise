@@ -703,21 +703,27 @@ impl crate::game::ClientGame<'_> {
         }
     }
     /// `chat_line` for a line the calling mod keeps under `tag` (its own keys): a line it added
-    /// under `tag` takes `text` in place, keeping its position; otherwise the line is added as
-    /// `chat_line` adds it. Outside a mod's call it is a plain `chat_line`.
+    /// under `tag` takes `text` in place, keeping its position, and is logged and counted for
+    /// the control socket like a new line; otherwise the line is added as `chat_line` adds it.
+    /// Outside a mod's call it is a plain `chat_line`. (The Chat option never hides it:
+    /// `ChatAbilities::shows` lets the client's own lines through.)
     pub(in crate::game) fn chat_line_tagged(&mut self, tag: &str, text: Text) {
         let Some(owner) = mod_api::content::crash::current_native_mod() else {
             self.chat_line(text);
             return;
         };
         let ticks = self.visual_ticks();
+        let focused = self.client.screen == Screen::Chat;
+        let plain = text.plain();
         if self.client.chat_ui.chat.replace_keyed(
             &self.client.gui.atlas,
             owner,
             tag,
             text.clone(),
             ticks,
+            focused,
         ) {
+            self.record_received_chat(plain);
             return;
         }
         self.client.chat_ui.chat.set_next_key(owner, tag);
