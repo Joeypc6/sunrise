@@ -1,3 +1,3 @@
-ids = ["method:ClientHost::open_link"]
+ids = ["method:prelude::ClientInputClientHost::open_link"]
 why = "Adds ClientHost::open_link(url): a mod's own click handler opens an http(s) link through the game's confirmation (ConfirmLinkScreen), or at once with Prompt on Links off, on the clipboard calls' terms (only while the game handles the player's input). False otherwise, with Chat Links off, or for another scheme."
 migrate = "Nothing to migrate. Use it in place of an open_url text component when the click is not on text."
