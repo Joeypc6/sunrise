@@ -327,7 +327,7 @@ impl crate::game::ClientGame<'_> {
     }
     /// The staged or shown native screen belonging to this opening, not a
     /// prior opening of the same numeric window id.
-    pub(in crate::game) fn active_native_screen(&self) -> Option<&OpenNativeScreen> {
+    pub fn active_native_screen(&self) -> Option<&OpenNativeScreen> {
         let screen = self.client.mod_screen.0.as_ref()?;
         let remote = &self.client.remote.as_ref()?.menu;
         (!screen.detached
@@ -1938,7 +1938,7 @@ impl crate::game::ClientGame<'_> {
         self.screen_view_at(screen, self.screen_rect(batch, screen))
     }
     /// `screen_view` with an explicit panel `rect` for container layout.
-    pub(in crate::game) fn screen_view_at(&self, screen: Screen, rect: [f32; 4]) -> ScreenView<'_> {
+    pub fn screen_view_at(&self, screen: Screen, rect: [f32; 4]) -> ScreenView<'_> {
         // Only the inventory screen shows a server's menu.
         let menu_shown = screen == Screen::Inventory;
         let shown_native = menu_shown.then(|| self.shown_native_screen()).flatten();
@@ -1961,7 +1961,13 @@ impl crate::game::ClientGame<'_> {
                 .filter(|_| menu_shown)
                 .or_else(|| shown_native.and_then(|s| s.menu.title.as_ref())),
             rect,
-            slots: self.slot_count(),
+            // A mod's screen over a kept menu shows none of the covered container screen's
+            // slots (they stay in the menu, as the covered screen's `screen_slot` answers say).
+            slots: if screen == Screen::Mod && self.mod_screen_menu().is_some() {
+                0
+            } else {
+                self.slot_count()
+            },
             mouse: self.cursor(),
             partial_tick: self.common.clock.fraction() as f32,
             regions: self.screen_regions(screen),

@@ -143,23 +143,33 @@ pub trait ScreensClientHost {
     /// it ends a container screen it replaces: `mod_screen_open` closes it as Escape closes a
     /// container screen.
     ///
-    /// Hooks: `screen_opening` fires from the container screen to `mod`, then
-    /// `screen_init_post`; the covered container screen gets no `screen_closing`. On return,
+    /// The container screen is covered, not closed, as NeoForge's `pushScreenLayer` covers a
+    /// screen (not as `Gui.setScreen` replaces one): it gets no `screen_closing`, its
+    /// `removed()` does not run, and its own state (the recipe book's page and search) stays.
+    /// Its mounted widgets and the gamepad's focus belong to it and go while it is covered;
+    /// the focus of the sub-screen never carries over to it.
+    ///
+    /// Hooks: `screen_opening` fires from the container screen to `mod` (the vetoable
+    /// `ScreenEvent.Opening` of the new screen), then `screen_init_post`. On return,
     /// `screen_opening` (from `mod` to the container screen), `screen_closing` for this screen,
-    /// then the container screen's `screen_init_post` again, as vanilla runs `Screen.init`
-    /// again for the parent: mount its widgets there as after a resize. A `screen_opening`
-    /// `ModScreen` answer opens that mod's screen over the menu instead. One level: called
-    /// while such a screen shows, it replaces it (`screen_closing` fires for the replaced one)
-    /// and Escape still returns to the container screen; `true` with nothing fired when
-    /// `mod_id`'s is already the one shown. Host queries about the shown container screen
-    /// (`screen_slot`, `screen_pos`, `screen_hovered_stack`) answer as with none open while it is
-    /// covered.
+    /// then the container screen's `screen_init_post` again, which mounts its widgets as after
+    /// a resize. A `screen_opening` `ModScreen` answer opens that mod's screen over the menu
+    /// instead. One level: called while such a screen shows, it replaces it (`screen_closing`
+    /// fires for the replaced one) and Escape still returns to the container screen; `true`
+    /// with nothing fired when `mod_id`'s is already the one shown.
+    ///
+    /// While the container screen is covered, host queries about the shown container screen
+    /// (`screen_slot`, `screen_pos`, `screen_hovered_stack`) answer as with none open, and the
+    /// sub-screen's `ScreenView.slots` is 0: its slots stay in the menu, not on this screen.
     ///
     /// Returns `true` when `mod_id`'s screen shows over the menu. `false`, with nothing
     /// changed, where `mod_screen_open` refuses (no window, a world loading, a guest's
     /// context), with no container screen of a menu the server opened shown (the world, the
     /// player's own inventory, the creative screen), with a book, sign editor, dialog or prompt
-    /// over it, or when `screen_opening` cancels or redirects the opening.
+    /// over it, or when `screen_opening` cancels the opening. A `Vanilla` answer returns `false`
+    /// too, but changes what shows: that screen opens in place of the container screen, which
+    /// hears `screen_closing`, and the menu closes with it (a container close goes to the
+    /// server), as when `mod_screen_open` is redirected.
     fn mod_screen_open_over_menu(&mut self, mod_id: &str) -> bool;
     /// Side: client.
     /// Takes (`grab` true) or gives back (`grab` false) the pointer for the calling mod's own

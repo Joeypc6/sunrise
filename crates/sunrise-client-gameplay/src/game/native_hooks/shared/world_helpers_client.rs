@@ -40,6 +40,8 @@ impl crate::game::ClientGame<'_> {
     pub fn close_mod_screen(&mut self) {
         if self.client.screen == Screen::Mod {
             if self.mod_screen_menu().is_some() {
+                // The sub-screen's focus does not carry over to the container screen.
+                self.pad_clear_focus();
                 self.set_screen(Screen::Inventory);
             } else if self.client.native_mod_screen_parent {
                 self.set_screen(Screen::Options);

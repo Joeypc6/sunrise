@@ -138,11 +138,19 @@ impl crate::game::ClientGame<'_> {
     /// Escape, `close_screen` or `mod_screen_close` return to the same container screen
     /// (`setScreen(parent)`), with the same menu, slots and carried stack and nothing sent. A
     /// server close of the menu, or any other screen replacing it, ends it as it ends the
-    /// container screen. `screen_opening` fires; the covered container screen gets no
-    /// `screen_closing`. Opened from another such screen, it replaces that one (one level).
+    /// container screen.
+    ///
+    /// The container screen is covered, not closed, as NeoForge's `pushScreenLayer` covers one:
+    /// it gets no `screen_closing` and its `removed()` does not run, so its screen state (the
+    /// recipe book page, a search) stays. `screen_opening` fires for the sub-screen. Its mounted
+    /// widgets and the gamepad's focus are the covered screen's own and go; on return they are
+    /// built again by `screen_init_post`, as after a resize, with no focus carried over from
+    /// the sub-screen. Opened from another such screen, it replaces that one (one level).
     /// False, with nothing changed, where `mod_screen_open` refuses, with no menu the server
     /// opened shown (the player's own inventory, creative, the world), with an overlay over the
-    /// container screen, or when `screen_opening` cancels or redirects it.
+    /// container screen, or when `screen_opening` cancels it. A `Vanilla` answer returns false
+    /// too, but that screen opens in place of the container screen and the menu closes with it,
+    /// as for `mod_screen_open`; the container screen then hears `screen_closing`.
     pub fn mod_screen_open_over_menu(&mut self, mod_id: &str) -> bool {
         if self.client.renderer.0.is_none() || self.common.player.is_none() || self.remote_loading()
         {
@@ -177,6 +185,14 @@ impl crate::game::ClientGame<'_> {
             match decision {
                 ScreenDecision::Keep => return false,
                 ScreenDecision::Vanilla(target) => {
+                    // The vanilla screen replaces the container screen, as it replaces the one
+                    // `mod_screen_open` replaces: the screen being left hears `screen_closing`
+                    // (a sub-screen's was fired with the decision) and the menu closes with it.
+                    if !over_sub_screen {
+                        let current = self.screen_change_view(self.client.screen);
+                        self.native_screen_closing(&current);
+                    }
+                    self.close_replaced_screen_for_mod();
                     self.open_screen_target(target);
                     return false;
                 }
@@ -184,6 +200,9 @@ impl crate::game::ClientGame<'_> {
                 ScreenDecision::Open => {}
             }
         }
+        // The sub-screen's focus is its own: nothing the covered container screen had focused
+        // (a gamepad's, a mounted widget's) stays focused under it.
+        self.pad_clear_focus();
         self.client.native_mod_screen_menu = Some(kept);
         self.apply_screen(Screen::Mod, Some(owner));
         self.mod_screen() == Some(mod_id)
