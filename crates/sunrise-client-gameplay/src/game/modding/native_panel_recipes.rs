@@ -318,7 +318,7 @@ impl Well {
 }
 
 /// A fluid's colour: its look's tint, else vanilla water's and lava's, else grey.
-pub(in crate::game) fn fluid_tint(fluid: &str, look: Option<u32>) -> u32 {
+pub(super) fn fluid_tint(fluid: &str, look: Option<u32>) -> u32 {
     look.unwrap_or(match fluid {
         "minecraft:water" => 0xFF3F76E4,
         "minecraft:lava" => 0xFFFF6A00,

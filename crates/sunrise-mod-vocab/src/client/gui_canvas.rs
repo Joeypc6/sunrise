@@ -235,19 +235,19 @@ pub trait GuiCanvas {
     /// Draw a sprite by its exact packed atlas name (not its GUI id) at `[x, y, w, h]`.
     fn atlas_sprite(&mut self, name: &str, dst: [f32; 4], argb: u32) -> Result<(), GuiDrawError>;
 
-    /// Draw `fluid` filling `rect = [x, y, w, h]` the way the recipe panel draws a fluid, as a
-    /// recipe viewer's or a tank screen's fluid does (NeoForge `IClientFluidTypeExtensions`:
-    /// `getStillTexture`, `getTintColor`): the sprite its look (`data/<mod>/sunrise/fluid/<name>.json`)
-    /// names, tiled at its own pixel size from the top left of `rect` and cut at the right and
-    /// bottom edges, multiplied by the look's tint. A fluid with no look sprite draws the block
-    /// atlas's `<namespace>:block/<path>_still` the same way when there is one (vanilla water's
-    /// `block/water_still` times its biome-less default 0xFF3F76E4, lava's `block/lava_still`
-    /// untinted, else times the look's tint); with neither, it fills flat with its colour
-    /// (0xFF3F76E4 water, 0xFFFF6A00 lava, else the look's tint or 0xFF9A9A9A). The sorted corners and the pose and scissor
-    /// apply as for [`Self::fill`]. The stack's amount and components do not change the look, and
-    /// no tint provider reads them yet. A rectangle of more than 4096 tiles stretches one sprite
-    /// instead of tiling. A fluid that is not registered is refused with
-    /// [`GuiDrawError::UnknownFluid`]; a non-finite `rect` with [`GuiDrawError::NotFinite`].
+    /// Draw `fluid` filling `rect = [x, y, w, h]`, as a recipe viewer's or a tank screen's fluid
+    /// (NeoForge `IClientFluidTypeExtensions`: `getStillTexture`, `getTintColor`). It draws the
+    /// fluid's one appearance, the one an item's fluid layer and the world use: a registered fluid
+    /// model's still sprite, else the sprite its look (`data/<mod>/sunrise/fluid/<name>.json`)
+    /// names, else water's; times the look's tint made opaque, white for a sprite with no tint,
+    /// water's item colour 0xFF3F76E4 for a look with neither. Vanilla water draws
+    /// `block/water_still` times 0xFF3F76E4, lava `block/lava_still` untinted. The sprite tiles
+    /// at its own pixel size from the top left of `rect`, cut at the right and bottom edges; a
+    /// rectangle of more than 4096 tiles stretches one sprite instead. A fluid no model knows
+    /// draws the missing sprite, and the empty fluid nothing. The sorted corners and the pose and
+    /// scissor apply as for [`Self::fill`]. The stack's amount and components do not change the
+    /// drawing, and no tint provider reads them yet. A fluid that is not registered is refused
+    /// with [`GuiDrawError::UnknownFluid`]; a non-finite `rect` with [`GuiDrawError::NotFinite`].
     fn fluid(&mut self, fluid: &FluidStack, rect: [f32; 4]) -> Result<(), GuiDrawError>;
 
     /// Draw a region of a texture packed in the GUI atlas at `[x, y, w, h]`: `texture` is the
