@@ -56,9 +56,15 @@ pub trait LevelTickingBackendMut {
     /// Queue a tick of `block` at `pos` in `delay` game ticks
     /// (`ScheduledTickAccess.scheduleTick(pos, block, delay, priority)`, which `LevelAccessor`
     /// inherits and `ServerLevel.getBlockTicks().schedule` backs): the queue `update_shape`'s
-    /// `schedule_block_tick` fills, so the tick is saved with its chunk, runs in tick order
-    /// (trigger tick, then priority, then the order scheduled) and is ignored when the block at
-    /// `pos` is no longer `block` as it comes due. `Ok(true)` when queued or already queued:
+    /// `schedule_block_tick` fills, so the tick is saved with its chunk and is ignored when the
+    /// block at `pos` is no longer `block` as it comes due. Run order (`LevelTicks.collectTicks`):
+    /// a chunk's own queue runs by trigger tick, then priority, then the order scheduled. Across
+    /// chunks there is no single order: each chunk with a due tick competes by its next tick's
+    /// priority, then the order scheduled, not by trigger tick. Ticks that come due on the same
+    /// game tick therefore run by priority, then the order scheduled, in every chunk; but when
+    /// ticks of different trigger ticks are due together (a chunk that could not tick, a pass
+    /// over its budget), an older `Low` tick in one chunk can run after a newer `High` tick in
+    /// another. `Ok(true)` when queued or already queued:
     /// vanilla keeps one tick per block and position (`LevelChunkTicks.schedule`), so a repeat
     /// with another delay or priority is dropped and the first keeps its deadline and priority.
     /// Inside a transaction the tick is queued when it commits, and its delay counts from there.

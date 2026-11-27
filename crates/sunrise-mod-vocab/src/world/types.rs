@@ -1307,7 +1307,10 @@ pub enum ClipBlock {
 }
 
 /// The order a scheduled tick runs in among those due on the same game tick
-/// (`net.minecraft.world.ticks.TickPriority`): lower runs first, `Normal` is the default.
+/// (`net.minecraft.world.ticks.TickPriority`): lower runs first, then the earlier scheduled;
+/// `Normal` is the default. Within one chunk an earlier trigger tick still comes first; across
+/// chunks the trigger tick is not compared, so an overdue tick can run after a higher-priority
+/// one due later in another chunk (`LevelTicks.collectTicks`).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
 pub enum TickPriority {
@@ -2163,8 +2166,9 @@ pub trait LevelTicksHost: LevelHost {
     /// `schedule_block_tick` at `priority` (`ScheduledTickAccess.scheduleTick(pos, block, delay,
     /// priority)`), as `DiodeBlock.checkTickOnNeighbor` schedules a diode's tick at `HIGH`,
     /// `VERY_HIGH` or `EXTREMELY_HIGH` from `neighborChanged`. The same queue and the same
-    /// [`TickPriority`] as `LevelRef::schedule_block_tick`: among the ticks due on one game tick,
-    /// a higher priority runs first, then the earlier scheduled.
+    /// [`TickPriority`] as `LevelRef::schedule_block_tick`: among the ticks that come due on the
+    /// same game tick, a higher priority runs first, then the earlier scheduled; the order across
+    /// chunks of ticks due on different game ticks is `LevelRef::schedule_block_tick`'s.
     fn schedule_block_tick_with_priority(
         &mut self,
         _pos: [i32; 3],

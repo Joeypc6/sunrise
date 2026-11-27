@@ -53,8 +53,12 @@ the tick queue, which `schedule_block_tick` fills.
 
 `schedule_block_tick(host, pos, block, delay, priority)` and `schedule_fluid_tick(host, pos,
 fluid, delay, priority)` queue a tick from any server hook, as `ScheduledTickAccess.scheduleTick`
-(which `LevelAccessor` inherits) does: the queue `update_shape` writes, saved with its chunk and
-run in tick order (trigger tick, then priority, then the order scheduled), and a block tick is
+(which `LevelAccessor` inherits) does: the queue `update_shape` writes, saved with its chunk. A
+chunk's own queue runs by trigger tick, then priority, then the order scheduled; across chunks
+there is no single order, as each chunk with a due tick competes by its next tick's priority,
+then the order scheduled, not by trigger tick (`LevelTicks.collectTicks`). So ticks due on the
+same game tick run by priority, then the order scheduled, in every chunk, but an overdue `Low`
+tick in one chunk can run after a newer `High` tick in another. A block tick is
 ignored when the block at `pos` is no longer `block` as it comes due. The queue keeps one tick per
 type and position: a repeat with another delay or priority is dropped, and the first keeps its
 deadline and priority. Inside a transaction the tick is queued at commit, its delay counted from
