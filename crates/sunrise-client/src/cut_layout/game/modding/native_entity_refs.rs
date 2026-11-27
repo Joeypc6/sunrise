@@ -1133,7 +1133,8 @@ pub(crate) mod tests {
     /// repeater's scheduled tick powers it, joins the queue `LevelRef::schedule_block_tick`
     /// writes. It does not run in the tick that scheduled it, and on the tick it is due it runs
     /// before a `NORMAL` tick due then that was scheduled earlier (`LevelTicks`'s
-    /// trigger tick, priority, then sub-tick order).
+    /// trigger tick, priority, then sub-tick order). Its `schedule_fluid_tick_with_priority`
+    /// queues a water tick at `VERY_HIGH` in the fluid queue.
     #[test]
     #[ignore = "daily"]
     fn a_part_schedules_a_high_priority_tick_from_neighbor_changed_that_runs_first_next_tick() {
@@ -1218,10 +1219,27 @@ pub(crate) mod tests {
             assert!(priority_ticks().is_empty());
 
             // The repeater's tick powers it (`DiodeBlock.tick`), and its `onPlace` updates `a`
-            // (`updateNeighborsInFront`): `a` schedules its HIGH tick, which waits.
+            // (`updateNeighborsInFront`): `a` schedules its HIGH tick, which waits, and a
+            // VERY_HIGH water tick, which the in-line writer queues at that priority.
             game.tick_scheduled().unwrap();
             assert_eq!(game.world.block(7, 64, 5), repeater("true"));
-            assert_eq!(priority_ticks(), [PriorityTick::Scheduled(a, true)]);
+            assert_eq!(
+                priority_ticks(),
+                [
+                    PriorityTick::Scheduled(a, true),
+                    PriorityTick::ScheduledFluid(a, true)
+                ]
+            );
+            let water =
+                sunrise_core::ticks::TickTypeId(sunrise_world::fluid::FluidKind::Water.tick_id());
+            let fluid_ticks: Vec<_> = game
+                .block_ticks
+                .fluids
+                .all_queued()
+                .filter(|tick| tick.pos == BlockPos::new(a[0], a[1], a[2]) && tick.kind == water)
+                .map(|tick| (tick.trigger_tick, tick.priority))
+                .collect();
+            assert_eq!(fluid_ticks, [(start + 5, TickPriority::VeryHigh)]);
 
             // Both due now: `a`'s HIGH tick runs before `b`'s NORMAL one, queued before it.
             game.world.game_time = start + 1;

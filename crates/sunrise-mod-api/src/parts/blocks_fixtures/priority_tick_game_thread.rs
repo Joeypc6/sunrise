@@ -1,7 +1,8 @@
 /// Install a part on glass that, when a neighbour changes, schedules its own tick 1 tick later
 /// at `TickPriority::High` from the in-line level writer, as `DiodeBlock.checkTickOnNeighbor`
-/// does (`level.scheduleTick(pos, block, delay, priority)`), and records each tick it runs, for
-/// real-game tests.
+/// does (`level.scheduleTick(pos, block, delay, priority)`), and a water tick there 5 ticks later
+/// at `TickPriority::VeryHigh` (`level.scheduleTick(pos, fluid, delay, priority)`), and records
+/// each tick it runs, for real-game tests.
 pub fn priority_tick_game_thread() {
     struct Scheduler(BlockKey);
     #[mod_api::sunrise_part]
@@ -15,6 +16,16 @@ pub fn priority_tick_game_thread() {
             let scheduled =
                 level.schedule_block_tick_with_priority(pos, self.0, 1, crate::TickPriority::High);
             PRIORITY_TICKS.with(|r| r.borrow_mut().push(PriorityTick::Scheduled(pos, scheduled)));
+            let fluid = level.schedule_fluid_tick_with_priority(
+                pos,
+                "minecraft:water",
+                5,
+                crate::TickPriority::VeryHigh,
+            );
+            PRIORITY_TICKS.with(|r| {
+                r.borrow_mut()
+                    .push(PriorityTick::ScheduledFluid(pos, fluid))
+            });
         }
         fn tick_block(
             &self,
@@ -41,14 +52,16 @@ pub fn priority_tick_game_thread() {
     mark_game_thread();
 }
 
-/// What the scheduling glass did: in `neighbor_changed`, the answer of its high-priority
-/// scheduling; or that its tick ran.
+/// What the scheduling glass did: in `neighbor_changed`, the answers of its high-priority block
+/// and very-high-priority fluid scheduling; or that its tick ran.
 #[derive(Clone, Debug, PartialEq, Eq)]
 // exhaustive: a test fixture's record, matched whole by the game's test
 // no wire: testing-feature fixture state, not a mod boundary value.
 pub enum PriorityTick {
     /// `neighbor_changed` at this position, and `schedule_block_tick_with_priority`'s answer.
     Scheduled([i32; 3], bool),
+    /// `neighbor_changed` at this position, and `schedule_fluid_tick_with_priority`'s answer.
+    ScheduledFluid([i32; 3], bool),
     /// `tick_block` ran at this position.
     Ticked([i32; 3]),
 }

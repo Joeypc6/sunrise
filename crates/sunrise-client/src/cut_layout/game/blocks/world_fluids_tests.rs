@@ -1049,7 +1049,8 @@ use sunrise_gameplay_common::game::native_entity_refs_common::NativeEntityRefsCo
 /// tick queue, at once or when the transaction commits (`ScheduledTickAccess.scheduleTick`). The
 /// queue keeps one tick per type and position: a repeat with another delay or priority is
 /// dropped and the first keeps its deadline and priority (`LevelChunkTicks.schedule`). Ticks due
-/// together run by priority, the journal's included. A position with no tick container is
+/// together run by priority, the journal's included, and a fluid tick a transaction queued keeps
+/// its priority. A position with no tick container is
 /// refused, as is a stale handle; the height is not checked (`LevelTicks.schedule`).
 #[test]
 #[ignore = "daily"]
@@ -1173,6 +1174,33 @@ fn a_mod_schedules_block_and_fluid_ticks_in_the_level_queue() {
                 ((), commit)
             });
             assert_eq!(game.block_ticks.has_block_tick(at(other), ice_id), commit);
+        }
+        // A fluid tick in a transaction is a journal write: the commit replays it into the fluid
+        // queue at its priority, its delay counted from there, and an abort leaves that queue
+        // empty at its position.
+        let fluid_ticks = |game: &Game<'_>, place: [i32; 3]| -> Vec<(i64, Engine)> {
+            game.block_ticks
+                .fluids
+                .all_queued()
+                .filter(|tick| tick.pos == at(place) && tick.kind == water_tick)
+                .map(|tick| (tick.trigger_tick, tick.priority))
+                .collect()
+        };
+        for commit in [false, true] {
+            game.storage_scope(|game, _| {
+                assert_eq!(
+                    level.schedule_fluid_tick(game, other, water, 20, TickPriority::VeryHigh),
+                    Ok(true)
+                );
+                assert!(fluid_ticks(game, other).is_empty());
+                ((), commit)
+            });
+            let expected = if commit {
+                vec![(game.world.game_time + 20, Engine::VeryHigh)]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(fluid_ticks(game, other), expected);
         }
         // The tick a transaction committed keeps its deadline and priority against a later
         // repeat with others.
