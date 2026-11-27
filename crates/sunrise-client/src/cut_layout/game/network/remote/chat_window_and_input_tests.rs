@@ -141,7 +141,7 @@ fn tagged_chat_round(game: &mut sunrise_client_gameplay::game::ClientGame<'_>, c
 fn a_mods_tagged_chat_line_replaces_and_removes_on_the_windows_own_chat() {
     with_game_role_client(
         fixture_root(),
-        sunrise_gameplay_common::game::execution_role::ExecutionRole::IntegratedServer,
+        sunrise_gameplay_common::game::execution_role::ExecutionRole::Client,
         |game| {
             assert!(game.client.remote.is_none());
             tagged_chat_round(game, false);
