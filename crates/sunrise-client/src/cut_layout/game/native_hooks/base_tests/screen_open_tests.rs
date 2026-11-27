@@ -993,7 +993,7 @@ fn the_menu_closing_closes_a_mod_screen_over_it() {
         assert_eq!(game.mod_screen(), None);
         assert_eq!(game.mod_screen_menu(), None);
         assert_eq!(game.open_menu_key(), None);
-        assert!(game.client.native_mod_screen_menu.is_none());
+        assert!(game.client.test_native_mod_screen_menu().is_none());
         assert_eq!(take(log), ["closing mod"]);
         assert!(
             !sent_packets(reader)
@@ -1012,7 +1012,7 @@ fn the_menu_closing_closes_a_mod_screen_over_it() {
         .unwrap();
         assert_eq!(game.client.screen, Screen::Dead);
         assert_eq!(game.mod_screen(), None);
-        assert!(game.client.native_mod_screen_menu.is_none());
+        assert!(game.client.test_native_mod_screen_menu().is_none());
     });
 }
 
@@ -1114,7 +1114,7 @@ fn a_server_opening_another_menu_replaces_the_sub_screen() {
         assert_eq!(game.client.screen, Screen::Inventory);
         assert_eq!(game.mod_screen(), None);
         assert_eq!(game.mod_screen_menu(), None);
-        assert!(game.client.native_mod_screen_menu.is_none());
+        assert!(game.client.test_native_mod_screen_menu().is_none());
         assert_eq!(game.open_menu_key().map(|key| key.0), Some(8));
     });
 }

@@ -1930,6 +1930,12 @@ impl ClientState {
         &self.debug_keys
     }
 
+    /// The server menu (window id, `ClientMenu` generation) the open mod screen was opened over.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_native_mod_screen_menu(&self) -> Option<(i32, u64)> {
+        self.native_mod_screen_menu
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn test_tick_debug_keys(
         &mut self,
