@@ -242,8 +242,9 @@ pub trait GuiCanvas {
     /// names, else water's; times the look's tint made opaque, white for a sprite with no tint,
     /// water's item colour 0xFF3F76E4 for a look with neither. Vanilla water draws
     /// `block/water_still` times 0xFF3F76E4, lava `block/lava_still` untinted. The sprite tiles
-    /// at its own pixel size from the top left of `rect`, cut at the right and bottom edges; a
-    /// rectangle of more than 4096 tiles stretches one sprite instead. A fluid no model knows
+    /// at its own pixel size from the top left of `rect`, cut at the right and bottom edges; only
+    /// the tiles that can show through the scissor (else the screen) are drawn, so a rectangle
+    /// far larger than the screen costs no more than the screen. A fluid no model knows
     /// draws the missing sprite, and the empty fluid nothing. The sorted corners and the pose and
     /// scissor apply as for [`Self::fill`]. The stack's amount and components do not change the
     /// drawing, and no tint provider reads them yet. A fluid that is not registered is refused

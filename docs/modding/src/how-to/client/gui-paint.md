@@ -125,8 +125,9 @@ item's fluid layer and in the world: a registered fluid model's still sprite, el
 look (`data/<mod>/sunrise/fluid/<name>.json`) names, else water's, times the look's tint made
 opaque (white for a sprite with no tint). Vanilla water draws `block/water_still` times
 `0xFF3F76E4`, lava `block/lava_still` untinted. The sprite tiles at its own pixel size from the
-top left and the last column and row are cut; a rectangle of more than 4096 tiles stretches one
-sprite instead. A fluid no model knows draws the missing sprite, the empty fluid nothing, and a
+top left and the last column and row are cut; only the tiles that can show through the scissor
+(else the screen) are drawn, so a rectangle far larger than the screen costs no more than the
+screen. A fluid no model knows draws the missing sprite, the empty fluid nothing, and a
 fluid that is not registered is refused with `UnknownFluid`. The stack's amount does not change
 the drawing: scale `h` yourself for a gauge.
 
