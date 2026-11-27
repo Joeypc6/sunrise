@@ -174,10 +174,10 @@ impl GameGuiCanvas<'_, '_> {
     /// sprite (a packed block atlas name, `minecraft:` optional, else a registered atlas's; the
     /// missing sprite when the atlas has neither) tiled at its own pixel size from the top left
     /// of the sorted `rect`, the last column and row cut, as JEI's `drawTiledSprite` does. Only
-    /// the tiles that can show through the canvas's clip (its scissor, else the screen) are
-    /// emitted, on the grid anchored at `rect`'s top left, so a huge `rect` adds the clip's tiles,
-    /// not its own. Each tile's corner comes from its index, so a far-off `rect` still ends after
-    /// its tiles.
+    /// what can show through the canvas's clip (its scissor, else the screen) is emitted, on the
+    /// grid anchored at `rect`'s top left, so the work is bounded by the clip's GUI pixels, not by
+    /// `rect` or the pose's scale: see [`fluid_tiles`]. Tile phases are taken relative to the
+    /// clip, and corners are posed in `f64` before narrowing, so a far-off `rect` keeps its tiles.
     fn paint_fluid(&mut self, still: &str, tint: u32, rect: [f32; 4]) -> Result<(), GuiDrawError> {
         let [x1, y1] = rect_end(rect)?;
         let atlas = self.atlas;
@@ -202,28 +202,64 @@ impl GameGuiCanvas<'_, '_> {
             sy1.min(self.batch.height),
         ];
         let (tw, th) = (f64::from(tile.w), f64::from(tile.h));
-        let Some([[c0, c1], [r0, r1]]) =
-            visible_tiles(self.pose, clip, [left, top, right, bottom], [tw, th])
-        else {
+        let fill = [left, top, right, bottom].map(f64::from);
+        let pose = self.pose;
+        let Some(plan) = fluid_tiles(pose, clip, fill, [tw, th]) else {
             return Ok(());
         };
-        self.paint(|batch, _| {
+        // The corners below are already posed, in `f64`.
+        self.paint_in_pose(IDENTITY, |batch, _| {
             let color = abgr(tint);
             let start = batch.vertices.len();
             let (du, dv) = (tile.u1 - tile.u0, tile.v1 - tile.v0);
-            // Integer counters over the visible tiles only, the clip's extent in local pixels.
-            for row in 0..(r1 - r0) as u64 {
-                let y = f64::from(top) + (r0 + row as f64) * th;
-                let h = (f64::from(bottom) - y).clamp(0.0, th);
-                for column in 0..(c1 - c0) as u64 {
-                    let x = f64::from(left) + (c0 + column as f64) * tw;
-                    let w = (f64::from(right) - x).clamp(0.0, tw);
-                    let cut = sunrise_client::hud::Rect {
-                        u1: tile.u0 + du * (w / tw) as f32,
-                        v1: tile.v0 + dv * (h / th) as f32,
-                        ..tile
-                    };
-                    batch.rect_uv(x as f32, y as f32, w as f32, h as f32, cut, color);
+            let posed = |x: f64, y: f64| {
+                let [x, y] = pose_f64(pose, [x, y]);
+                [x as f32, y as f32]
+            };
+            match plan {
+                FluidTiles::Tiles([columns, rows]) => {
+                    // Integer counters over the visible tiles only.
+                    for row in 0..rows.count {
+                        let (y, h) = rows.tile(row);
+                        for column in 0..columns.count {
+                            let (x, w) = columns.tile(column);
+                            let (u1, v1) = (
+                                tile.u0 + du * (w / tw) as f32,
+                                tile.v0 + dv * (h / th) as f32,
+                            );
+                            batch.quad(
+                                [
+                                    posed(x, y),
+                                    posed(x + w, y),
+                                    posed(x + w, y + h),
+                                    posed(x, y + h),
+                                ],
+                                [[tile.u0, tile.v0], [u1, tile.v0], [u1, v1], [tile.u0, v1]],
+                                color,
+                            );
+                        }
+                    }
+                }
+                FluidTiles::Pixels([x0, y0, x1, y1]) => {
+                    for py in y0..y1 {
+                        for px in x0..x1 {
+                            let centre = [px as f64 + 0.5, py as f64 + 0.5];
+                            let [lx, ly] = unpose_f64(pose, centre);
+                            if !(lx >= fill[0] && lx < fill[2] && ly >= fill[1] && ly < fill[3]) {
+                                continue;
+                            }
+                            let uv = [
+                                tile.u0 + du * (tile_phase(lx, fill[0], tw) / tw) as f32,
+                                tile.v0 + dv * (tile_phase(ly, fill[1], th) / th) as f32,
+                            ];
+                            let [x, y] = [px as f32, py as f32];
+                            batch.quad(
+                                [[x, y], [x + 1.0, y], [x + 1.0, y + 1.0], [x, y + 1.0]],
+                                [uv; 4],
+                                color,
+                            );
+                        }
+                    }
                 }
             }
             if let Some(page) = page {
@@ -235,6 +271,7 @@ impl GameGuiCanvas<'_, '_> {
                     ),
                 );
             }
+            Ok(())
         })
     }
 }
@@ -263,65 +300,124 @@ fn tint_vertices(batch: &mut HudBatch, start: usize, tint: u32) {
     }
 }
 
-/// The tile indices, `[[first column, end column], [first row, end row]]`, of a fill over the
-/// sorted `[left, top, right, bottom]` tiled every `tile` GUI pixels from its top left that can
-/// show through the screen-space `clip` under `pose`: the tiles meeting the bounding box of the
-/// clip's corners mapped back through the inverse pose. A mod's `rect` is any finite `f32`
-/// (`1e30` wide is finite), so this bounds the tiles one call adds by the clip, not by `rect`.
-/// `None` when no tile can show: an empty clip, a fill outside it, or a singular pose (which
-/// flattens the fill to zero area).
-fn visible_tiles(
+/// What a fluid fill emits to show through a clip, from [`fluid_tiles`].
+enum FluidTiles {
+    /// The visible tiles, columns then rows, each quad posed corner by corner.
+    Tiles([TileSpan; 2]),
+    /// More visible tiles than GUI pixel cells (tiles under a pixel on average, from a
+    /// minifying pose): one screen-space quad per GUI pixel cell `[x0, y0, x1, y1)` whose centre
+    /// is inside the fill, with the uv of the texel the tiling puts at that centre, as point
+    /// sampling the full tiling there would.
+    Pixels([i64; 4]),
+}
+
+/// One axis of the visible tiles: the first's local start, how many, where the fill ends, and
+/// the tile size.
+#[derive(Clone, Copy)]
+struct TileSpan {
+    start: f64,
+    count: u64,
+    end: f64,
+    size: f64,
+}
+
+impl TileSpan {
+    /// The `n`th visible tile's local start and extent, the fill's last one cut.
+    fn tile(self, n: u64) -> (f64, f64) {
+        let at = self.start + n as f64 * self.size;
+        (at, (self.end - at).clamp(0.0, self.size))
+    }
+}
+
+/// How far into its tile `x` is, on a grid of `size` starting at `origin`. Each remainder is
+/// exact, so a far-off `origin` (`-1e30`) keeps the phase.
+fn tile_phase(x: f64, origin: f64, size: f64) -> f64 {
+    let phase = (x.rem_euclid(size) - origin.rem_euclid(size)).rem_euclid(size);
+    if phase < size { phase } else { 0.0 }
+}
+
+/// `pose_point` in `f64`: (a x + c y + e, b x + d y + f).
+fn pose_f64(pose: Pose, [x, y]: [f64; 2]) -> [f64; 2] {
+    let [a, b, c, d, e, f] = pose.map(f64::from);
+    [a * x + c * y + e, b * x + d * y + f]
+}
+
+/// The inverse of [`pose_f64`]; the translation is taken off first so a far-off one stays exact.
+fn unpose_f64(pose: Pose, [x, y]: [f64; 2]) -> [f64; 2] {
+    let [a, b, c, d, e, f] = pose.map(f64::from);
+    let det = a * d - c * b;
+    let (x, y) = (x - e, y - f);
+    [(d * x - c * y) / det, (a * y - b * x) / det]
+}
+
+/// What a fill over the sorted local `[left, top, right, bottom]`, tiled every `tile` GUI pixels
+/// from its top left, emits to show through the screen-space `clip` under `pose`. The visible
+/// part is the fill meeting the bounding box of the clip's corners mapped back through the
+/// inverse pose; the first tile on each axis comes from the phase of that box's edge, not from
+/// an index counted from a distant origin. When those tiles outnumber the GUI pixel cells of the
+/// clip meeting the posed fill, [`FluidTiles::Pixels`] covers the cells instead, so either way
+/// the quads are bounded by the clip's GUI pixels. A mod's `rect` and pose are any finite `f32`
+/// (`1e30` wide, a scale of `1 / 256`). `None` when nothing can show: an empty clip, a fill
+/// outside it, or a singular pose (which flattens the fill to zero area).
+fn fluid_tiles(
     pose: Pose,
     [cx0, cy0, cx1, cy1]: [f32; 4],
-    [left, top, right, bottom]: [f32; 4],
+    [left, top, right, bottom]: [f64; 4],
     [tw, th]: [f64; 2],
-) -> Option<[[f64; 2]; 2]> {
+) -> Option<FluidTiles> {
     if !(cx1 > cx0 && cy1 > cy0) {
         return None;
     }
-    let [a, b, c, d, e, f] = pose.map(f64::from);
-    // `pose_point` maps (x, y) to (a x + c y + e, b x + d y + f).
+    let [a, b, c, d, ..] = pose.map(f64::from);
     let det = a * d - c * b;
     if det == 0.0 || !det.is_finite() {
         return None;
     }
-    let local = |x: f32, y: f32| {
-        let (x, y) = (f64::from(x) - e, f64::from(y) - f);
-        [(d * x - c * y) / det, (a * y - b * x) / det]
+    let bounds = |points: [[f64; 2]; 4]| {
+        let min = |axis: usize| points.iter().map(|p| p[axis]).fold(f64::INFINITY, f64::min);
+        let max = |axis: usize| {
+            points
+                .iter()
+                .map(|p| p[axis])
+                .fold(f64::NEG_INFINITY, f64::max)
+        };
+        [min(0), min(1), max(0), max(1)]
     };
-    let corners = [
-        local(cx0, cy0),
-        local(cx1, cy0),
-        local(cx1, cy1),
-        local(cx0, cy1),
-    ];
-    let min = |axis: usize| {
-        corners
-            .iter()
-            .map(|p| p[axis])
-            .fold(f64::INFINITY, f64::min)
-    };
-    let max = |axis: usize| {
-        corners
-            .iter()
-            .map(|p| p[axis])
-            .fold(f64::NEG_INFINITY, f64::max)
-    };
-    let (x0, x1) = (min(0).max(f64::from(left)), max(0).min(f64::from(right)));
-    let (y0, y1) = (min(1).max(f64::from(top)), max(1).min(f64::from(bottom)));
+    let corners = |[x0, y0, x1, y1]: [f64; 4]| [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    let clip = [cx0, cy0, cx1, cy1].map(f64::from);
+    let local = bounds(corners(clip).map(|p| unpose_f64(pose, p)));
+    let (x0, x1) = (local[0].max(left), local[2].min(right));
+    let (y0, y1) = (local[1].max(top), local[3].min(bottom));
     if !(x1 > x0 && y1 > y0) {
         return None;
     }
-    // The tiles meeting [lo, hi) of an axis whose grid starts at `origin` and ends at `end`.
-    let span = |lo: f64, hi: f64, origin: f32, end: f32, size: f64| {
-        let origin = f64::from(origin);
-        let count = ((f64::from(end) - origin) / size).ceil();
-        [
-            ((lo - origin) / size).floor().max(0.0),
-            ((hi - origin) / size).ceil().min(count),
-        ]
+    let posed = bounds(corners([left, top, right, bottom]).map(|p| pose_f64(pose, p)));
+    let cells = [
+        posed[0].max(clip[0]).floor(),
+        posed[1].max(clip[1]).floor(),
+        posed[2].min(clip[2]).ceil(),
+        posed[3].min(clip[3]).ceil(),
+    ];
+    if !(cells[2] > cells[0] && cells[3] > cells[1]) {
+        return None;
+    }
+    let span = |lo: f64, hi: f64, origin: f64, end: f64, size: f64| {
+        let start = (lo - tile_phase(lo, origin, size)).max(origin);
+        TileSpan {
+            start,
+            count: ((hi - start) / size).ceil() as u64,
+            end,
+            size,
+        }
     };
-    Some([span(x0, x1, left, right, tw), span(y0, y1, top, bottom, th)])
+    let columns = span(x0, x1, left, right, tw);
+    let rows = span(y0, y1, top, bottom, th);
+    let area = (cells[2] - cells[0]) * (cells[3] - cells[1]);
+    Some(if columns.count as f64 * rows.count as f64 > area {
+        FluidTiles::Pixels(cells.map(|edge| edge as i64))
+    } else {
+        FluidTiles::Tiles([columns, rows])
+    })
 }
 
 /// Two packed colours multiplied channel by channel, as a shader multiplies a vertex colour by
@@ -1515,10 +1611,16 @@ mod tests {
     /// load of looks rebuilds unchanged, so no other test can alter it.
     #[test]
     fn vanilla_water_and_lava_draw_their_block_still_sprites_as_an_items_fluid_layer_does() {
-        let atlas = block_atlas(&["block/water_still", "block/lava_still"]);
-        for (fluid, tint) in [
-            ("minecraft:water", 0xFF3F_76E4),
-            ("minecraft:lava", u32::MAX),
+        let mut atlas = block_atlas(&["block/water_still"]);
+        let lava = Rect {
+            u0: 0.5,
+            u1: 1.0,
+            ..TILE
+        };
+        atlas.sprites.insert("block/lava_still".into(), lava);
+        for (fluid, tint, uv) in [
+            ("minecraft:water", 0xFF3F_76E4, [0.0, 0.0, 0.5, 0.5]),
+            ("minecraft:lava", u32::MAX, [0.5, 0.0, 1.0, 0.5]),
         ] {
             let stack = fluid_stack(fluid);
             let mut batch = HudBatch::scratch([320, 240]);
@@ -1528,8 +1630,8 @@ mod tests {
             .unwrap();
             assert_eq!(
                 quad_extents(&batch.vertices),
-                [([0.0, 0.0, 16.0, 16.0], [0.0, 0.0, 0.5, 0.5])],
-                "{fluid}: one whole tile of its sprite"
+                [([0.0, 0.0, 16.0, 16.0], uv)],
+                "{fluid}: one whole tile of its own sprite"
             );
             assert!(
                 batch.vertices.iter().all(|v| v.color == abgr(tint)),
@@ -1596,8 +1698,8 @@ mod tests {
     /// rectangle's top left, each a whole repeat of the sprite where the rectangle goes on: a
     /// rectangle a million pixels square under a 40 x 20 scissor adds that scissor's six tiles, one
     /// starting above and left of the scissor keeps its grid, and one outside the clip adds
-    /// nothing. Tile corners come from their index: a rectangle so far off that `x + 16.0` rounds
-    /// back to `x`, posed back on screen, still ends after its four columns.
+    /// nothing. A rectangle from -1e30 across the screen, and one so far off that `x + 16.0`
+    /// rounds back to `x` posed back on screen, keep whole tiles at their exact posed corners.
     #[test]
     fn a_huge_or_far_off_fluid_rectangle_tiles_only_where_the_clip_shows_it() {
         let atlas = block_atlas(&["block/water_still"]);
@@ -1648,6 +1750,20 @@ mod tests {
                 .is_empty()
         );
 
+        // A rectangle from -1e30 to 1e30 crossing the screen: its 16 px phase there is 0.
+        let row = |n: usize| -> Vec<_> {
+            (0..n)
+                .map(|i| {
+                    let x = 16.0 * i as f32;
+                    ([x, 0.0, x + 16.0, 16.0], whole)
+                })
+                .collect()
+        };
+        let batch = fill(None, [-1e30, 0.0, 2e30, 16.0]);
+        assert_eq!(quad_extents(&batch.vertices), row(20));
+
+        // 2^29 + 16 rounds back to 2^29 in `f32`; posed back on screen in `f64` first, the
+        // four tiles are whole.
         let mut batch = HudBatch::scratch([320, 240]);
         let mut pose = IDENTITY;
         pose_apply(&mut pose, PoseOp::Translate(-536_870_912.0, 0.0));
@@ -1658,7 +1774,31 @@ mod tests {
                 [536_870_912.0, 0.0, 64.0, 16.0],
             )
         });
-        assert_eq!(batch.vertices.len(), 24, "four columns of one row");
+        assert_eq!(quad_extents(&batch.vertices), row(4));
+    }
+
+    /// A minifying pose puts many tiles in each GUI pixel; the fill then emits one quad per GUI
+    /// pixel of the clip, sampling the texel the tiling puts at its centre, not every tile: a
+    /// 100,000 px square at a scale of 1 / 256 on a 320 x 240 canvas adds 76,800 quads, not
+    /// 19,660,800. Each centre `(p + 0.5) * 256` is 8 px into a tile of the grid starting at 8.
+    #[test]
+    fn a_minified_fluid_rectangle_emits_at_most_one_quad_per_gui_pixel_of_the_clip() {
+        let atlas = block_atlas(&["block/water_still"]);
+        let mut batch = HudBatch::scratch([320, 240]);
+        let mut pose = IDENTITY;
+        pose_apply(&mut pose, PoseOp::Scale(1.0 / 256.0, 1.0 / 256.0));
+        on_canvas(&mut batch, &atlas, pose, |canvas| {
+            canvas.paint_fluid(
+                "block/water_still",
+                u32::MAX,
+                [8.0, 8.0, 100_000.0, 100_000.0],
+            )
+        });
+        let quads = quad_extents(&batch.vertices);
+        assert_eq!(quads.len(), 320 * 240);
+        assert_eq!(quads[0], ([0.0, 0.0, 1.0, 1.0], [0.25, 0.25, 0.25, 0.25]));
+        assert_eq!(quads[321], ([1.0, 1.0, 2.0, 2.0], [0.25, 0.25, 0.25, 0.25]));
+        assert!(quads.iter().all(|(_, uv)| *uv == [0.25, 0.25, 0.25, 0.25]));
     }
 
     /// A sprite the atlas lacks draws the missing sprite; an unregistered fluid and a non-finite
