@@ -207,7 +207,7 @@ impl GameGuiCanvas<'_, '_> {
                     for column in 0..columns as u32 {
                         let x = left + column as f32 * tw;
                         let w = (right - x).clamp(0.0, tw);
-                        let cut = crate::hud::Rect {
+                        let cut = sunrise_client::hud::Rect {
                             u1: tile.u0 + du * w / tw,
                             v1: tile.v0 + dv * h / th,
                             ..tile
@@ -1426,10 +1426,10 @@ mod tests {
     }
 
     /// Each six-vertex quad's position and uv extents, `[min x, min y, max x, max y]`.
-    fn quad_extents(vertices: &[crate::hud::HudVertex]) -> Vec<([f32; 4], [f32; 4])> {
+    fn quad_extents(vertices: &[sunrise_client::hud::HudVertex]) -> Vec<([f32; 4], [f32; 4])> {
         fn extent(
-            q: &[crate::hud::HudVertex],
-            f: fn(&crate::hud::HudVertex) -> [f32; 2],
+            q: &[sunrise_client::hud::HudVertex],
+            f: fn(&sunrise_client::hud::HudVertex) -> [f32; 2],
         ) -> [f32; 4] {
             let (xs, ys) = (q.iter().map(|v| f(v)[0]), q.iter().map(|v| f(v)[1]));
             [
