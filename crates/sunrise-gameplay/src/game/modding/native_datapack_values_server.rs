@@ -46,11 +46,13 @@ impl<'g> DatapackValuesSide<'g> for ServerGame<'g> {
 }
 
 impl ServerGame<'_> {
-    /// `EntityGetter.isUnobstructed(null, shape)` for a world-space `shape`: checks every live
-    /// non-spectator player (including LAN guests and dedicated-server players) and every
+    /// `EntityGetter.isUnobstructed(null, shape)` for a world-space `shape`: checks every
+    /// non-spectator player still in the level (including LAN guests and dedicated-server
+    /// players, and a dead player until `LivingEntity.tickDeath` removes it) and every
     /// `blocksBuilding` entity in `level` (active or parked). Mobs come from the level's entity
     /// lookup by the shape's bounds, as `EntityGetter.getEntities(source, shape.bounds())` does,
-    /// not from a walk over every mob. An empty shape is unobstructed.
+    /// not from a walk over every mob. An empty shape is unobstructed. An overlap that cannot be
+    /// evaluated (`Shapes.joinIsNotEmpty` over the grid limit) is `Err(Unavailable)`, not clear.
     pub(in crate::game) fn is_shape_unobstructed(
         &self,
         level: LevelRef,
@@ -60,8 +62,22 @@ impl ServerGame<'_> {
         let Some(cell) = shape.bounds() else {
             return Ok(true);
         };
+        // A failed join stops the scan as a hit; `verdict` then reports the error.
+        let failed = std::cell::Cell::new(false);
         let mut obstructs = |blocker: Aabb| {
-            sunrise_sim::mobs::spawn_selection::blocks_spawn_shape(shape, cell, blocker)
+            sunrise_world::entity_obstruction::shape_meets_box(shape, cell, blocker).unwrap_or_else(
+                |_| {
+                    failed.set(true);
+                    true
+                },
+            )
+        };
+        let verdict = |obstructed: bool| {
+            if failed.get() {
+                Err(PlacementQueryError::Unavailable)
+            } else {
+                Ok(!obstructed)
+            }
         };
         let dim_id = level.dimension_id();
         let dim = Dim::from_id(dim_id);
@@ -76,7 +92,7 @@ impl ServerGame<'_> {
                 .as_ref()
                 .is_some_and(|p| obstructs(p.bounds()))
         {
-            return Ok(false);
+            return verdict(true);
         }
         if self.server.lan_acting.is_some() {
             if self
@@ -86,31 +102,29 @@ impl ServerGame<'_> {
                 .iter(dim)
                 .any(&mut obstructs)
             {
-                return Ok(false);
+                return verdict(true);
             }
         } else if let Some(host) = self.server.lan.as_ref()
             && host
                 .hub
                 .guests
                 .simulation_iter()
-                .filter(|g| g.dimension == dim_id && g.loaded && !g.dead && !g.spectator())
+                .filter(|g| g.dimension == dim_id && g.loaded && g.blocks_building())
                 .any(|g| obstructs(g.bounds()))
         {
-            return Ok(false);
+            return verdict(true);
         }
 
         if is_active {
-            return datapack_active_world_entities_unobstructed(
-                self,
-                level,
-                cell,
-                obstructs,
-                |_| false,
-            );
+            let clear =
+                datapack_active_world_entities_unobstructed(self, level, cell, obstructs, |_| {
+                    false
+                })?;
+            return verdict(!clear);
         }
 
         if let Some(parked) = self.server.levels.0.parked_of(dim_id) {
-            return Ok(!parked.any_building_blocker(obstructs));
+            return verdict(parked.any_building_blocker(obstructs));
         }
 
         Ok(true)

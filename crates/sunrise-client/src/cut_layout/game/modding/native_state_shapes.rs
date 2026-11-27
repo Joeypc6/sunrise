@@ -168,16 +168,79 @@ pub(crate) mod tests {
                 stale.is_unobstructed(game, pos, stone),
                 Err(LevelReadError::Stale)
             );
-            // The Overworld stays readable while parked.
+            // The Overworld stays readable while parked, its blockers with it.
+            game.armor_stands
+                .push(sunrise_sim::entities::ArmorStand::new(
+                    9104,
+                    Vec3::new(0.5, 64.6, 0.5),
+                    0.0,
+                ));
             game.enter_level(sunrise_gameplay_common::game::Dim::Nether)
                 .unwrap();
-            assert_eq!(level.is_unobstructed(game, pos, stone), Ok(true));
+            assert_eq!(level.is_unobstructed(game, pos, stone), Ok(false));
+            assert_eq!(level.is_unobstructed(game, [4, 64, 0], stone), Ok(true));
             game.options.execution_role =
                 sunrise_gameplay_common::game::execution_role::ExecutionRole::Client;
             assert_eq!(
                 level.is_unobstructed(game, pos, stone),
                 Err(LevelReadError::Unavailable)
             );
+        });
+    }
+
+    /// `ServerPlayer.die` leaves the player in the level: its body blocks building until
+    /// `LivingEntity.tickDeath` removes it at death tick 20 (`EntityGetter.isUnobstructed`
+    /// skips only removed entities and spectators).
+    /// Runs in its own process: `with_game` publishes process-wide game tables.
+    #[test]
+    #[ignore = "daily"]
+    fn is_unobstructed_counts_a_dead_guest_until_its_body_is_removed() {
+        sunrise_gameplay_common::game::in_own_process(
+            "game::native_state_shapes::tests::is_unobstructed_counts_a_dead_guest_until_its_body_is_removed",
+            is_unobstructed_counts_a_dead_guest_isolated,
+        );
+    }
+
+    fn is_unobstructed_counts_a_dead_guest_isolated() {
+        sunrise_gameplay::game::native_entity_refs::tests::with_game(|game| {
+            let level = game.level("minecraft:overworld").unwrap();
+            let pos = [0, 64, 0];
+            let stone = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:stone")
+                .unwrap()
+                .try_into_api()
+                .unwrap();
+            assert_eq!(level.is_unobstructed(game, pos, stone), Ok(true));
+            sunrise_gameplay::game::native_player_death::tests::add_guest(game);
+            fn set(game: &mut sunrise_gameplay::game::ServerGame<'_>, death_time: u32) {
+                game.server
+                    .lan
+                    .as_mut()
+                    .unwrap()
+                    .hub
+                    .guests
+                    .update(0, |guest| {
+                        guest.dimension = sunrise_gameplay_common::game::Dim::Overworld.id().into();
+                        guest.position = [0.5, 64.0, 0.5];
+                        guest.loaded = true;
+                        guest.health = 0.0;
+                        guest.dead = true;
+                        guest.death_time = death_time;
+                    });
+            }
+            for death_time in [0, 19] {
+                set(game, death_time);
+                assert_eq!(
+                    level.is_unobstructed(game, pos, stone),
+                    Ok(false),
+                    "death tick {death_time}"
+                );
+            }
+            set(game, 20);
+            assert_eq!(level.is_unobstructed(game, pos, stone), Ok(true));
         });
     }
 }
