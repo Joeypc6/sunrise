@@ -21,10 +21,7 @@ pub(crate) type Boxes = Vec<([f64; 3], [f64; 3])>;
 pub(crate) fn game<'a>(
     resources: &'a mut Option<std::sync::Arc<sunrise_gameplay_common::game::Resources>>,
 ) -> sunrise_gameplay::game::ServerGame<'a> {
-    let root = std::path::PathBuf::from(
-        std::env::var_os("SUNRISE_TEST_RESOURCES")
-            .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
-    );
+    let root = crate::prepared_test_root::prepared_root(&[]);
     let settings = Settings::default();
     let loaded = load_resources(
         sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
