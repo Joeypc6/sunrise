@@ -298,7 +298,6 @@ pub(crate) mod tests {
                 let net = NetConfig {
                     listen: false,
                     announce: false,
-                    lod_distance: 0,
                     ..NetConfig::lan(0, String::new(), 2)
                 };
                 let config = HubConfig {
@@ -872,13 +871,10 @@ pub(crate) mod tests {
     #[ignore = "daily"]
     fn fake_body_does_not_count_toward_sleep() {
         super::super::native_entity_refs::tests::with_game(|game| {
-            game.player = Some(
-                sunrise_sim::motion::PlayerMotion::new(
-                    game.motion,
-                    sunrise_core::geometry::Vec3::ZERO,
-                )
-                .unwrap(),
-            );
+            game.player = Some(sunrise_sim::motion::PlayerMotion::new(
+                game.motion,
+                sunrise_core::geometry::Vec3::ZERO,
+            ));
             game.server.lan_acting_fake = false;
             let real = game.sleep_counts();
             assert_eq!(real.0, 1);

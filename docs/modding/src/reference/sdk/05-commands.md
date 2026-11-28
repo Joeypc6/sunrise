@@ -6,8 +6,8 @@ folder.
 
 | Command | What it does |
 |---|---|
-| `new <path> --template native [--sunrise <build>]` | Makes a code mod pinned to the current Nightly's build, or the one named, and fetches its SDK. Without `--template` it makes a content mod, which has no SDK. Both templates scaffold [`page.toml` and `page/`](../../how-to/publish.md#your-mods-page) and the [release workflow caller](#release). |
-| `build [--with <path>]…` | Compiles a native mod and its [declared libraries](../../concepts/dependencies.md) against the pinned SDK, then packs only the project into a `.smod` with its [`uses.json`](04-fit.md#usesjson). For content-only mods it just packs the project. If the project has `page.toml`, writes the page and its named images separately to `target/sunrise-mod/<id>.page.tar`. See [`build` for a native mod](#build-for-a-native-mod). |
+| `new <path> --template native [--sunrise <build>]` | Makes a code mod pinned to the current Nightly's build, or the one named, and fetches its SDK. Without `--template` it makes a content mod, which has no SDK. `--sunrise` requires `--template native`. Both templates scaffold [`page.toml` and `page/`](../../how-to/publish.md#your-mods-page) and the [release workflow caller](#release). |
+| `build [--with <path>]… [--timings] [--verbose \| -v]` | Compiles a native mod and its [declared libraries](../../concepts/dependencies.md) against the pinned SDK, then packs only the project into a `.smod` with its [`uses.json`](04-fit.md#usesjson). For content-only mods it just packs the project. If the project has `page.toml`, writes the page and its named images separately to `target/sunrise-mod/<id>.page.tar`. See [`build` for a native mod](#build-for-a-native-mod). |
 | [`release [<version>\|patch\|minor\|major] [--check] [--pull-request]`](#release) | Checks a mod in a registered repository, commits the version bump, and pushes the branch and tag. `--check` previews without changing the checkout; `--pull-request` commits on a new `release/<tag>` branch instead. |
 | [`release setup`](#release) | Updates only the shared workflow caller and removes old release files. No registration or commit required. |
 | [`collection [--check]`](../../how-to/collections.md) | Checks the registry collection kept in this folder with the registry's rules, pushes it to your fork of sunrise-org/sunrise-mods and prints the link that opens its pull request. Without `collection.toml` it writes one listing this repository's published projects from the signed registry index. `--check` stops after the checks. |
@@ -16,7 +16,7 @@ folder.
 | `check [<file.smod>] --build <name> [--build <name>]…` | Reports fit for each named build instead of running the ordinary check. Takes no other options. Name the build `nightly` to check the current Nightly. Exits 0 when all fit, 1 when one does not fit, and 2 when fit cannot be judged. |
 | `check --release <tag>` | Checks the project, compiles a native mod as `build` does, and fails on missing or invalid page data. If the page selects categories, the registry's list must be available and every selected ID must apply to the package kind. The tag must be `v<version>` at the Git repository root or `<id>/v<version>` for a mod in a subfolder. |
 | [`check <file.smod>`](#check-a-released-package) `[--attestation <bundle>] [--repository <id>] [--json]` | Checks the package and verifies its GitHub artifact attestation offline. |
-| `hooks <text> [--all]` | Searches the pinned build's hooks offline, by id, doc and their NeoForge, Fabric and Paper names; every word must match. `--all` searches every record. Matches in the id come first, then in a counterpart, then in the doc. |
+| `hooks <text> [--all]` | Searches the pinned build's hooks offline, by id, doc and their NeoForge, Fabric and Paper names; every word must match. It reads the verified SDK already in `.sunrise/sdk/` and fetches nothing: run `check` first, or it refuses without changing the project. `--all` searches every record. Matches in the id come first, then in a counterpart, then in the doc. |
 | `sdk diff <build> <build>` | What changed in the surface from the first build to the second, [classified](02-surface.md#what-a-change-is), with the second build's change notes (why, and what a mod does now) under the changes they name: the notes of the changes since the SDK published before it. It reads only the builds' small files, so it works for builds whose compiled files are pruned. |
 | `pin [<build>]` | Moves the pin to the current Nightly (or the build named). Reports API uses and declared internals that would break before moving the pin. |
 | `use-jar <path \| modrinth-url \| <project> <version>>` | Lists an exact original Java jar as a passive asset and data source in `sunrise-mod.toml` (recording only `id`, `version` and `sha512`) and caches it in the local jar store. Accepts a local jar path, a Modrinth version page URL, or a Modrinth project and version. |
@@ -51,6 +51,13 @@ A mod with crates.io dependencies and no `Cargo.lock` gets one; `build --update-
 a content mod. `build` uses the same compiler as [`native-build`](08-native-build.md), with registry crates approved
 (the mod's own `Cargo.toml`), for the `client` side. It prints `Built <library>` and the build log's path, and exits
 non-zero with the error on failure.
+
+`build --timings` reports the path of the retained Cargo HTML report on stderr after a successful Cargo
+build. The report measures Cargo units, not a separate linker interval; direct compiler routes say that
+no Cargo ran. `build --verbose` (or `-v`) mirrors compiler stderr live while keeping the build log and
+failure diagnostics, and is refused when the SDK's pinned tool must compile lower-crate copies, where
+`--timings` stays allowed. Both options are refused for content-only mods. `build` does not pass arbitrary
+arguments to Cargo.
 
 In `build`, `run` and project `check`, repeat `--with <path>` for local mod projects or `.smod` files.
 Optional libraries must be supplied with `--with`. For required dependencies not supplied locally, the tool

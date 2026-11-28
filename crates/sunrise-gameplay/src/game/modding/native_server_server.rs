@@ -25,7 +25,6 @@ use sunrise_gameplay_common::game::native_server::argument_kinds::{
     custom_value, dimension_value, nbt_value, parsed_type, positional_value,
 };
 use sunrise_gameplay_common::game::native_server::command_tree_for;
-use sunrise_gameplay_common::game::native_server::online_mode_of;
 use sunrise_gameplay_common::game::native_server::orb_meets;
 use sunrise_gameplay_common::game::native_server::ordered_box;
 use sunrise_gameplay_common::game::native_server::register_command_nodes;
@@ -195,12 +194,13 @@ impl crate::game::ServerGame<'_> {
             ));
         }
         let id = self.server.next_entity.checked_add(1)?;
-        let entity_id = i32::try_from(id).ok()?;
+        // The guest record keeps the same 32 bits as its signed carrier, as `Hub::admit` does
+        // for a joining player: IDs from 0x8000_0000 on are as good as any (#6374).
+        let entity_id = id as i32;
         let motion = PlayerMotion::new(
             self.common.motion,
             sunrise_core::geometry::Vec3::new(0.0, 0.0, 0.0),
-        )
-        .ok()?;
+        );
         let host = self.server.lan.as_mut()?;
         let conn = host.hub.lan.shared.next_id()?;
         let mut guest = Guest::connectionless(conn, uuid, name.into(), entity_id, [0.0; 3], motion);
@@ -279,6 +279,18 @@ impl crate::game::ServerGame<'_> {
             return Err(PlayerDataRefusal::Client);
         }
         self.player_handle_turn(player, false)
+            .ok_or(PlayerDataRefusal::Stale)
+    }
+
+    /// `native_resident_player_turn` for a living player only: a dead one is `Stale`.
+    pub(in crate::game) fn native_living_player_turn(
+        &self,
+        player: PlayerRef,
+    ) -> Result<PlayerTurn, PlayerDataRefusal> {
+        if !self.common.is_logical_server() {
+            return Err(PlayerDataRefusal::Client);
+        }
+        self.player_handle_turn(player, true)
             .ok_or(PlayerDataRefusal::Stale)
     }
 
@@ -1532,7 +1544,7 @@ impl crate::game::ServerGame<'_> {
     }
 
     /// Resolves `entity` to a mutable live experience orb in the active or any parked server level.
-    fn native_orb_mut(
+    pub(in crate::game) fn native_orb_mut(
         &mut self,
         entity: EntityRef,
     ) -> Result<&mut sunrise_sim::entities::ExperienceOrb, ExperienceOrbWriteError> {
@@ -2017,22 +2029,6 @@ impl crate::game::ServerGame<'_> {
         pos: [i32; 3],
     ) -> Option<bool> {
         self.level_is_raining_at(level, pos)
-    }
-}
-
-#[expect(dead_code, reason = "dedicated settings stay engine-private")]
-impl crate::game::ServerGame<'_> {
-    pub(in crate::game) fn native_online_mode(&self) -> Option<bool> {
-        Some(online_mode_of(&self.dedicated_lan()?.shared.config))
-    }
-
-    pub(in crate::game) fn native_server_port(&self) -> Option<u16> {
-        Some(self.dedicated_lan()?.port)
-    }
-
-    fn dedicated_lan(&self) -> Option<&sunrise_sim::lan::Lan> {
-        self.common.options.dedicated.as_ref()?;
-        Some(&self.server.lan.as_ref()?.hub.lan)
     }
 }
 

@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use sunrise_core::nbt::Tag;
 use sunrise_core::{
     geometry::Vec3,
-    random::{LegacyRandom, LevelRandom, RandomSource},
+    random::{LegacyRandom, RandomSource},
 };
 use sunrise_gameplay::village_siege::{SiegeLevel, VillageSiege};
 use sunrise_level::{
@@ -1526,8 +1526,9 @@ impl crate::game::ServerGame<'_> {
                 .bool_at(sunrise_game_data::gamerules::vanilla::SPAWN_MONSTERS);
         let mut random = std::mem::replace(
             &mut self.common.world.random,
-            LevelRandom::for_level(LegacyRandom::new(0)),
+            crate::rng_count::placeholder_level(LegacyRandom::new(0)),
         );
+        let lent = crate::game::server_side::native_level_spawning::LevelRandomLent::start();
         let mut members: Vec<Member> = Vec::new();
         let mut spawner = std::mem::take(&mut self.server.raiding.0.patrol);
         {
@@ -1545,6 +1546,7 @@ impl crate::game::ServerGame<'_> {
             }
         }
         self.server.raiding.0.patrol = spawner;
+        drop(lent);
         self.common.world.random = random;
         for m in members {
             let at = [
@@ -1595,8 +1597,9 @@ impl SiegeLevel for ServerGame<'_> {
     fn check_zombie_spawn_rules(&mut self, [x, y, z]: [i32; 3]) -> bool {
         let mut random = std::mem::replace(
             &mut self.common.world.random,
-            LevelRandom::for_level(LegacyRandom::new(0)),
+            crate::rng_count::placeholder_level(LegacyRandom::new(0)),
         );
+        let lent = crate::game::server_side::native_level_spawning::LevelRandomLent::start();
         let ok = spawn_rules::monster_rules(
             Species::Zombie,
             &self.mob_world_base(&[]),
@@ -1606,6 +1609,7 @@ impl SiegeLevel for ServerGame<'_> {
             y,
             z,
         );
+        drop(lent);
         self.common.world.random = random;
         ok
     }

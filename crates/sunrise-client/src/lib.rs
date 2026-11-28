@@ -4,8 +4,8 @@
 #![forbid(unsafe_code)]
 
 #[cfg(test)]
-#[used]
-static KEEP_TEST_PLATFORM: fn() = mod_platform::__private::test_platform::keep;
+mod_platform::__install_engine_test_platform!();
+
 extern crate self as sunrise_client;
 #[cfg(feature = "client")]
 pub use sunrise_client_lib::carrier_store;
@@ -39,5 +39,11 @@ pub(crate) use sunrise_sim::{datapack_net, entities, motion, raw_payloads};
 pub use sunrise_sim::{lan, orb_limits, save};
 #[cfg(test)]
 mod test_game_dir;
+
+// The one way a unit test gets prepared data: `SUNRISE_TEST_RESOURCES`, else the checkout's
+// `.local/sunrise-client/<version>`, with every input it names required.
+#[cfg(test)]
+#[path = "../../sunrise-core/src/prepared_test_root.rs"]
+pub(crate) mod prepared_test_root;
 
 pub use sunrise_level::{crash, logging, spans};

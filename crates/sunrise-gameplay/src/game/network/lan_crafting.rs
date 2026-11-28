@@ -399,18 +399,12 @@ impl crate::game::ServerGame<'_> {
             });
         }
         if !crafted.is_empty() {
-            self.as_guest(conn, |g| {
-                for (recipe, ingredients) in &crafted {
-                    g.trigger_recipe_crafted(recipe, ingredients);
-                }
-            });
+            self.as_guest(conn, |g| g.award_crafted(&crafted));
         }
         if !item_crafted.is_empty() {
             self.as_guest(conn, |g| {
                 let player = g.native_acting_id();
                 for (recipe, stack, inputs) in &item_crafted {
-                    // ItemStack.onCraftedBy awards Stats.ITEM_CRAFTED.
-                    g.award_stat("crafted", &stack.item, stack.count as i32);
                     g.native_item_crafted(player, recipe, stack, inputs);
                 }
             });
@@ -1822,7 +1816,7 @@ impl crate::game::ServerGame<'_> {
             let (window, state, mut menu, pos) = host
                 .menus
                 .get_mut(&conn)
-                .and_then(|play| play.crafting.table.take_if(|(w, ..)| *w == container))?;
+                .and_then(|play| play.crafting.table.lift_if(|(w, ..)| *w == container))?;
             let placed = self.guest_menu_op(gi, &mut menu, apply)?;
             let host = self.server.lan.as_mut()?;
             *host.menus.entry(conn).or_default().crafting.table = Some((window, state, menu, pos));
@@ -1865,10 +1859,11 @@ impl crate::game::ServerGame<'_> {
         let Some(play) = host.menus.get_mut(&conn) else {
             return false;
         };
+        // Lifted, not taken: mods deciding the click still see the table open.
         let Some((window, mut state, mut menu, pos)) = play
             .crafting
             .table
-            .take_if(|(window, ..)| *window == p.container)
+            .lift_if(|(window, ..)| *window == p.container)
         else {
             return false;
         };
@@ -2548,6 +2543,19 @@ impl crate::game::ServerGame<'_> {
             self.spawn_item(stack, g.position, [0.0, 0.1, 0.0], 40);
         }
     }
+    /// `RecipeCraftingHolder.awardUsedRecipes` for each take, in order: the `recipe_crafted`
+    /// trigger, then the recipe becomes known (`ServerPlayer.awardRecipes`; special ones never
+    /// do). The host's own clicks and a guest's (a single-player window's included) both land
+    /// here.
+    pub(in crate::game) fn award_crafted(&mut self, crafts: &[(String, Vec<Option<ItemStack>>)]) {
+        for (recipe, ingredients) in crafts {
+            // The whole id: the advancements' `recipe_crafted` criteria name
+            // `minecraft:x`, and the crafting copy names the recipe bare.
+            let recipe = sunrise_sim::crafting::qualified(recipe);
+            self.trigger_recipe_crafted(&recipe, ingredients);
+            self.award_recipes(std::slice::from_ref(&recipe));
+        }
+    }
 }
 
 use sunrise_gameplay_common::game::tables::GameItems as _;
@@ -2567,3 +2575,7 @@ use sunrise_gameplay_common::game::player_equip::PlayerEquipGameExt2 as _;
 #[cfg(test)]
 #[path = "lan_crafting/furnace_take_tests_server.rs"]
 mod furnace_take_tests_server;
+
+#[cfg(test)]
+#[path = "lan_crafting/recipe_award_tests_server.rs"]
+mod recipe_award_tests_server;

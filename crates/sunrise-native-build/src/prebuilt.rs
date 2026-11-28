@@ -194,7 +194,11 @@ impl Package {
     /// The three slices as one folder at `into`, linked file by file (copied where a link can't
     /// be made): the folder the engine and registry routes build against.
     pub fn whole(&self, into: &Path) -> Result<PathBuf, String> {
-        let _ = fs::remove_dir_all(into);
+        match fs::remove_dir_all(into) {
+            Ok(()) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(format!("{}: {error}", into.display())),
+        }
         for slice in [&self.runtime, &self.api, &self.engine] {
             link_tree(slice, slice, into)?;
         }
@@ -741,11 +745,11 @@ impl Route {
     }
 }
 
-/// Creates `out`, a build folder directly under `builds`, itself directly under the native work
-/// folder, refusing either when it is a link (a symlink or a Windows junction) or resolves outside
-/// its parent: the build clears folders inside `out`, and must never reach a folder elsewhere
-/// through it.
-fn own_folder(builds: &Path, out: &Path) -> Result<(), String> {
+/// Creates or validates `out` directly under `builds`, whether for build output, a Cargo target,
+/// or a staging folder (including the previous registry stage). Both directories must be real
+/// directories, not symlinks or Windows junctions, and each must resolve directly under its
+/// parent so build writes, stage rotation, and timestamp reuse stay in the intended folders.
+pub(super) fn own_folder(builds: &Path, out: &Path) -> Result<(), String> {
     let work = builds
         .parent()
         .ok_or_else(|| format!("{}: no work folder above it", builds.display()))?;
@@ -755,7 +759,8 @@ fn own_folder(builds: &Path, out: &Path) -> Result<(), String> {
         let inside = || -> std::io::Result<bool> {
             Ok(fs::canonicalize(dir)?.parent() == Some(fs::canonicalize(parent)?.as_path()))
         };
-        if meta.file_type().is_symlink() || !meta.is_dir() || !inside().unwrap_or(false) {
+        if super::crates::is_link_or_junction(&meta) || !meta.is_dir() || !inside().unwrap_or(false)
+        {
             return Err(format!(
                 "{}: not a folder of its own under {}; remove it and build again",
                 dir.display(),
@@ -796,6 +801,7 @@ pub fn compile(
     // Each mod is its own library: told which one starts, and how far through them.
     on_mod: &dyn Fn(&str, usize, usize),
     check_only: bool,
+    diagnostics: super::BuildDiagnostics,
 ) -> Result<Option<Built>, String> {
     let sdk = identity(&package.runtime)?;
     let catalog = internals::Catalog::read(&package.api, sdk.commit())?;
@@ -836,7 +842,11 @@ pub fn compile(
             projects,
             declared,
             resolution,
-            super::api_route::Options { on_mod, check_only },
+            super::api_route::Options {
+                on_mod,
+                check_only,
+                stderr: diagnostics.stderr,
+            },
         );
         // Stamped after the route has made its folder again, failed or not.
         if out.exists() {
@@ -877,6 +887,7 @@ pub fn compile(
                 mixins: &mixins,
                 sdk: &sdk,
                 catalog: &catalog,
+                diagnostics,
             },
             check_only,
         )?;
@@ -942,9 +953,11 @@ pub fn compile(
                     ));
                 }
             }
-            super::run(
+            super::run_compiler(
                 cmd,
                 &trf("Compiling {mod}'s declared internals", &[("mod", id)]),
+                None,
+                diagnostics.stderr,
             )?;
             facades.insert(id, rlib);
         }
@@ -978,6 +991,7 @@ pub fn compile(
             &identities,
             &source,
             check_only,
+            diagnostics.stderr,
         )?;
         rlibs.insert(id, rlib);
         crate_names.insert(id, krate);
@@ -994,6 +1008,7 @@ pub fn compile(
         &mixins,
         |edition| rustc(rust, game, out, edition),
         check_only,
+        diagnostics.stderr,
     )?;
     if check_only {
         return Ok(None);
@@ -1037,7 +1052,12 @@ pub fn compile(
         }
         cmd.arg("-o").arg(&library).arg(source);
         if !unchanged {
-            super::run(cmd, tr("Compiling the patch library"))?;
+            super::run_compiler(
+                cmd,
+                tr("Compiling the patch library"),
+                None,
+                diagnostics.stderr,
+            )?;
             fs::write(saved, fingerprint).map_err(|e| e.to_string())?;
         }
         super::library_record::validate_exports(&library, "sunrise_patch")?;
@@ -1157,6 +1177,7 @@ pub fn compile_mod<'a>(
     identities: &super::library_record::Identities,
     files: &str,
     check_only: bool,
+    stderr: super::CompilerStderr,
 ) -> Result<(PathBuf, String), String> {
     let id = project.bundle.manifest.id.as_str();
     let edition = project
@@ -1176,7 +1197,7 @@ pub fn compile_mod<'a>(
     let lib_path = project.cargo.get("lib").and_then(|lib| lib.get("path"));
     let source = staged.join(stage_entry(&staged, lib_path, id, entry)?);
     let mut cmd = rustc(edition);
-    // Diagnostics as JSON, which `run_diagnosed` shows at the author's files: the compiler's
+    // Diagnostics as JSON, which `run_compiler` shows at the author's files: the compiler's
     // inputs and outputs stay those of the staged copy.
     cmd.args([
         "--error-format=json",
@@ -1243,7 +1264,7 @@ pub fn compile_mod<'a>(
             cmd.arg("--out-dir").arg(out);
         }
         cmd.arg(&source);
-        super::run_diagnosed(cmd, &compiling(id), &sources)?;
+        super::run_compiler(cmd, &compiling(id), Some(&sources), stderr)?;
     }
     if !check_only {
         super::library_record::validate_exports(&library, id)?;
@@ -2048,6 +2069,7 @@ mod tests {
                 None,
                 &|_, _, _| {},
                 false,
+                super::super::BuildDiagnostics::default(),
             );
             let Err(error) = result else {
                 panic!("build accepted another build's internals catalog");
@@ -2128,6 +2150,7 @@ mod tests {
                 None,
                 &|_, _, _| {},
                 false,
+                super::super::BuildDiagnostics::default(),
             )
             .err()
             .expect("the fixture has no SDK mod_api library to compile against")
@@ -2203,6 +2226,27 @@ mod tests {
                 .is_file()
         );
         assert!(!kept.join("target").exists());
+    }
+
+    #[test]
+    fn combined_sdk_refuses_a_cleanup_error_before_linking_slices() {
+        let scratch = tempfile::tempdir().unwrap();
+        let package = Package::at(&scratch.path().join("sdk"));
+        for slice in [&package.runtime, &package.api, &package.engine] {
+            fs::create_dir_all(slice).unwrap();
+        }
+        fs::write(package.runtime.join("incoming"), "new SDK file").unwrap();
+        let into = scratch.path().join("prebuilt-package");
+        // A non-directory obstruction gives a cleanup failure without relying on permissions.
+        fs::write(&into, "stale").unwrap();
+        let cleanup = fs::remove_dir_all(&into).unwrap_err();
+        assert_ne!(cleanup.kind(), std::io::ErrorKind::NotFound);
+
+        let error = package.whole(&into).unwrap_err();
+
+        assert_eq!(error, format!("{}: {cleanup}", into.display()));
+        assert_eq!(fs::read_to_string(&into).unwrap(), "stale");
+        assert!(!into.join("incoming").exists());
     }
 
     #[test]

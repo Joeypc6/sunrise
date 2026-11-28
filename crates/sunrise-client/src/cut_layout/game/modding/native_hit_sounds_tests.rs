@@ -118,7 +118,6 @@ fn check(
                 sunrise_sim::lan::NetConfig {
                     listen: false,
                     announce: false,
-                    lod_distance: 0,
                     ..sunrise_sim::lan::NetConfig::lan(0, String::new(), 2)
                 },
                 sunrise_sim::lan::hub::HubConfig {
@@ -138,7 +137,7 @@ fn check(
                 },
             )
             .unwrap();
-            game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+            game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO));
             bind_local_player(game, 7, 7);
             game.set_game_mode(GameMode::Survival);
             let kind = game.res.mob_types().get("minecraft:pig").unwrap().clone();

@@ -1737,16 +1737,6 @@ fn login_and_configure(
             data: sunrise_protocol::custom_book::CAPABILITY.to_vec(),
         }),
     )?;
-    // And how far it samples far terrain for it (crate::lod_net).
-    if brand == "sunrise" && shared.config.lod_distance > 0 {
-        send(
-            c,
-            cfg::Clientbound::CustomPayload(cfg::CustomPayload {
-                channel: crate::lod_net::CHANNEL.into(),
-                data: crate::lod_net::Offer::new(shared.config.lod_distance).encode(),
-            }),
-        )?;
-    }
     let difference = sunrise_protocol::mod_list::compare(&server_mods, &client_mods);
     if !difference.is_empty() {
         let text = mod_mismatch(&difference);
@@ -1851,10 +1841,27 @@ fn login_and_configure(
             return Ok(None);
         }
     }
+    // Mod-declared sync(true) static custom registries (ConfigurationInitialization:38-41:
+    // skipped on in-process single-player memory connections; LAN guests still sync).
+    if let Some(data) = crate::custom_registry_net::server_payload(
+        &shared.custom_registries,
+        brand == "sunrise",
+        c.is_memory(),
+    )? {
+        for data in crate::custom_registry_net::chunks(&data)? {
+            send(
+                c,
+                cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                    channel: crate::custom_registry_net::CHANNEL.into(),
+                    data,
+                }),
+            )?;
+        }
+    }
     for packet in sync.registry_packets(known_pack, &shared.config.levels) {
         send(c, cfg::Clientbound::RegistryData(packet))?;
     }
-    send(c, cfg::Clientbound::UpdateTags(sync.tags.clone()))?;
+    send(c, cfg::Clientbound::UpdateTags(sync.tags_for_brand(&brand)))?;
     // addOptionalTasks: the code of conduct task comes first.
     if let Some(text) =
         super::code_of_conduct::pick(&shared.config.code_of_conducts, &info.language)
@@ -1931,18 +1938,22 @@ fn login_and_configure(
     }))
 }
 
+fn payload_control_body(
+    control: sunrise_protocol::payload_negotiation::Control,
+) -> Result<Vec<u8>, String> {
+    Ok(cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+        channel: sunrise_protocol::payload_negotiation::CHANNEL.into(),
+        data: control.encode().map_err(|e| e.to_string())?,
+    })
+    .encode())
+}
+
 fn send_payload_control(
     c: &mut ConfigIo<'_>,
     control: sunrise_protocol::payload_negotiation::Control,
 ) -> Result<(), String> {
-    c.send(
-        &cfg::Clientbound::CustomPayload(cfg::CustomPayload {
-            channel: sunrise_protocol::payload_negotiation::CHANNEL.into(),
-            data: control.encode().map_err(|e| e.to_string())?,
-        })
-        .encode(),
-    )
-    .map_err(|e| e.to_string())
+    c.send(&payload_control_body(control)?)
+        .map_err(|e| e.to_string())
 }
 
 /// The configuration ping that orders a Sunrise client's payload Offer before
@@ -1982,8 +1993,47 @@ fn payload_disconnect(c: &mut ConfigIo<'_>, error: String) -> String {
     error
 }
 
-/// Consume transport metadata in every configuration receive loop. Application
-/// payloads stay ordered for the configuration dispatcher (not implemented here).
+/// Decode a packet and consume its transport metadata in every configuration receive loop,
+/// replying through `reply`. None when the packet was that metadata.
+fn negotiate_payloads(
+    id: i32,
+    bytes: &[u8],
+    transport: &Transport,
+    negotiation: &mut sunrise_protocol::payload_negotiation::Negotiation,
+    reply: impl FnOnce(sunrise_protocol::payload_negotiation::Control) -> Result<(), String>,
+) -> Result<Option<cfg::Serverbound>, String> {
+    let packet = cfg::Serverbound::decode_with_payload_codecs(id, bytes, &transport.local.codecs)
+        .map_err(|e| e.to_string())?;
+    if let cfg::Serverbound::CustomPayload(payload) = &packet
+        && payload.channel == sunrise_protocol::payload_negotiation::CHANNEL
+    {
+        let control = sunrise_protocol::payload_negotiation::Control::decode(&payload.data)
+            .and_then(|control| negotiation.receive(control))
+            .map_err(|e| e.to_string())?;
+        if let Some(control) = control {
+            reply(control)?;
+        }
+        if let Some(accepted) = negotiation.accepted() {
+            transport.accept(accepted)?;
+        }
+        return Ok(None);
+    }
+    Ok(Some(packet))
+}
+
+/// A custom payload goes to `application`, which gives it back unless it took it.
+fn take_application(
+    packet: Option<cfg::Serverbound>,
+    application: impl FnOnce(cfg::CustomPayload) -> Result<Option<cfg::CustomPayload>, String>,
+) -> Result<Option<cfg::Serverbound>, String> {
+    match packet {
+        Some(cfg::Serverbound::CustomPayload(payload)) => {
+            application(payload).map(|payload| payload.map(cfg::Serverbound::CustomPayload))
+        }
+        packet => Ok(packet),
+    }
+}
+
 fn receive_configuration(
     c: &mut ConfigIo<'_>,
     id: i32,
@@ -1991,29 +2041,29 @@ fn receive_configuration(
     transport: &Transport,
     negotiation: &mut sunrise_protocol::payload_negotiation::Negotiation,
 ) -> Result<Option<cfg::Serverbound>, String> {
-    let packet = cfg::Serverbound::decode_with_payload_codecs(id, bytes, &transport.local.codecs)
-        .map_err(|e| payload_disconnect(c, e.to_string()))?;
-    if let cfg::Serverbound::CustomPayload(payload) = &packet
-        && payload.channel == sunrise_protocol::payload_negotiation::CHANNEL
-    {
-        let result = sunrise_protocol::payload_negotiation::Control::decode(&payload.data)
-            .and_then(|control| negotiation.receive(control));
-        let reply = result.map_err(|e| payload_disconnect(c, e.to_string()))?;
-        if let Some(reply) = reply {
-            send_payload_control(c, reply)?;
+    // A reply the writer refused is not answered with a disconnect through that writer.
+    let mut unsent = false;
+    let packet = negotiate_payloads(id, bytes, transport, negotiation, |control| {
+        send_payload_control(c, control).inspect_err(|_| unsent = true)
+    })
+    .map_err(|e| if unsent { e } else { payload_disconnect(c, e) })?;
+    take_application(packet, |payload| c.application(payload))
+}
+
+/// Read packets from `next` until `answer` has a result.
+fn answer_configuration<T>(
+    mut next: impl FnMut() -> Result<Option<cfg::Serverbound>, String>,
+    mut answer: impl FnMut(Result<cfg::Serverbound, String>) -> Option<Result<T, String>>,
+) -> Result<T, String> {
+    loop {
+        let packet = match next() {
+            Ok(Some(packet)) => Ok(packet),
+            Ok(None) => continue,
+            Err(e) => Err(e),
+        };
+        if let Some(result) = answer(packet) {
+            return result;
         }
-        if let Some(accepted) = negotiation.accepted() {
-            transport
-                .accept(accepted)
-                .map_err(|e| payload_disconnect(c, e))?;
-        }
-        return Ok(None);
-    }
-    match packet {
-        cfg::Serverbound::CustomPayload(payload) => c
-            .application(payload)
-            .map(|payload| payload.map(cfg::Serverbound::CustomPayload)),
-        packet => Ok(Some(packet)),
     }
 }
 
@@ -2191,7 +2241,7 @@ fn wait_alive<T>(
     c: &mut ConfigIo<'_>,
     transport: &Transport,
     negotiation: &mut sunrise_protocol::payload_negotiation::Negotiation,
-    mut answer: impl FnMut(Result<cfg::Serverbound, String>) -> Option<Result<T, String>>,
+    answer: impl FnMut(Result<cfg::Serverbound, String>) -> Option<Result<T, String>>,
 ) -> Result<T, String> {
     if let Some(sender) = c.sender.clone() {
         return std::thread::scope(|scope| {
@@ -2208,20 +2258,13 @@ fn wait_alive<T>(
                     }
                 }
             });
-            let result = loop {
-                let (id, payload) = match c.recv() {
-                    Ok(packet) => packet,
-                    Err(e) => break Err(e.to_string()),
-                };
-                let packet = match receive_configuration(c, id, &payload, transport, negotiation) {
-                    Ok(Some(packet)) => Ok(packet),
-                    Ok(None) => continue,
-                    Err(e) => Err(e),
-                };
-                if let Some(result) = answer(packet) {
-                    break result;
-                }
-            };
+            let result = answer_configuration(
+                || {
+                    let (id, payload) = c.recv().map_err(|e| e.to_string())?;
+                    receive_configuration(c, id, &payload, transport, negotiation)
+                },
+                answer,
+            );
             drop(stop);
             result
         });
@@ -2249,61 +2292,24 @@ fn wait_alive<T>(
                     }
                 }
             });
-            let result = loop {
-                let packet = match connection.reader.recv() {
-                    Ok((id, payload)) => cfg::Serverbound::decode_with_payload_codecs(
-                        id,
-                        &payload,
-                        &transport.local.codecs,
-                    )
-                    .map_err(|e| e.to_string()),
-                    Err(err) => break Err(err.to_string()),
-                };
-                if let Ok(cfg::Serverbound::CustomPayload(payload)) = &packet
-                    && payload.channel == sunrise_protocol::payload_negotiation::CHANNEL
-                {
-                    let result = (|| {
-                        let control =
-                            sunrise_protocol::payload_negotiation::Control::decode(&payload.data)
-                                .map_err(|e| e.to_string())?;
-                        if let Some(reply) =
-                            negotiation.receive(control).map_err(|e| e.to_string())?
-                        {
-                            let body = cfg::Clientbound::CustomPayload(
-                                sunrise_protocol::packets::custom_payload::CustomPayload {
-                                    channel: sunrise_protocol::payload_negotiation::CHANNEL.into(),
-                                    data: reply.encode().map_err(|e| e.to_string())?,
-                                },
-                            )
-                            .encode();
+            // Every error ends the wait, and the disconnect follows once the keep-alive stopped.
+            let result = answer_configuration(
+                || {
+                    let (id, payload) = connection.reader.recv().map_err(|e| e.to_string())?;
+                    let packet =
+                        negotiate_payloads(id, &payload, transport, negotiation, |control| {
                             writer
                                 .lock()
                                 .unwrap()
-                                .send(&body)
-                                .map_err(|e| e.to_string())?;
-                        }
-                        if let Some(accepted) = negotiation.accepted() {
-                            transport.accept(accepted)?;
-                        }
-                        Ok::<(), String>(())
-                    })();
-                    if let Err(error) = result {
-                        break Err(error);
-                    }
-                    continue;
-                }
-                // As receive_configuration does: the engine's channels are read here too.
-                if let Ok(cfg::Serverbound::CustomPayload(payload)) = &packet {
-                    match channels.receive(payload) {
-                        Ok(true) => continue,
-                        Ok(false) => {}
-                        Err(error) => break Err(error),
-                    }
-                }
-                if let Some(result) = answer(packet) {
-                    break result;
-                }
-            };
+                                .send(&payload_control_body(control)?)
+                                .map_err(|e| e.to_string())
+                        })?;
+                    take_application(packet, |payload| {
+                        Ok((!channels.receive(&payload)?).then_some(payload))
+                    })
+                },
+                answer,
+            );
             drop(stop);
             result
         })
@@ -2325,12 +2331,25 @@ fn play(
         shared.release(parts.uuid);
         return;
     };
+    #[cfg(feature = "net-trace")]
+    let capture = match shared.open_capture(conn, &parts.name) {
+        super::CaptureAdmission::Disabled => None,
+        super::CaptureAdmission::Opened(clock, writer) => Some((clock, writer)),
+        super::CaptureAdmission::Sealed => {
+            shared.release(parts.uuid);
+            return;
+        }
+    };
     shared.entered_play();
     let pending = Arc::new(AtomicUsize::new(0));
     let outbox = match io_pool::Outbox::new(pending.clone(), !c.is_memory()) {
         Ok(outbox) => outbox,
         Err(e) => {
             log::warn!("[lan] {e}");
+            #[cfg(feature = "net-trace")]
+            if let Some((_, capture)) = capture {
+                capture.close(Some("outbox_failed"));
+            }
             shared.release(parts.uuid);
             return;
         }
@@ -2342,6 +2361,10 @@ fn play(
         .and_then(|connection| connection.droppable())
     {
         outbox.attach_droppable(queue.clone());
+    }
+    #[cfg(feature = "net-trace")]
+    if let Some((clock, capture)) = capture {
+        outbox.attach_capture(clock, capture);
     }
     let latency = Arc::new(AtomicI32::new(0));
     let watch = Arc::new(KeepAliveWatch {
@@ -2408,6 +2431,19 @@ fn play(
         .is_err()
     {
         session.left("server closed".to_owned());
+        #[cfg(feature = "net-trace")]
+        if let Some(capture) = outbox.take_capture() {
+            capture.close(None);
+        }
+        session.closed();
+        return;
+    }
+    #[cfg(feature = "net-trace")]
+    if shared.capture_sealed() {
+        session.left("server closed".to_owned());
+        if let Some(capture) = outbox.take_capture() {
+            capture.close(None);
+        }
         session.closed();
         return;
     }
@@ -2708,37 +2744,51 @@ impl SharedFrames {
     /// `frame::contents(body, Some(threshold))`, compressed only when no
     /// connection has sent the same body lately or compresses it now.
     fn contents(&self, body: &[u8], threshold: usize) -> sunrise_protocol::Result<Arc<[u8]>> {
+        let (key, frame) = self.frame_slot(body, threshold);
+        self.fill_frame(key, &frame, body)
+    }
+
+    fn frame_slot(&self, body: &[u8], threshold: usize) -> (FrameKey, Frame) {
         let hash = xxhash_rust::xxh3::xxh3_128_with_secret(body, &self.secret);
         let key = (body.len(), hash, threshold);
-        let (frame, made_here) = {
-            let mut cache = self.cache();
-            match cache.frames.get(&key) {
-                Some(frame) => (frame.clone(), false),
-                None => {
-                    let frame = Frame::default();
-                    cache.frames.insert(key, frame.clone());
-                    cache.order.push_back(key);
-                    (frame, true)
-                }
-            }
-        };
-        let contents = frame
-            .get_or_init(|| {
-                sunrise_protocol::frame::contents(body, Some(threshold))
-                    .map(Arc::from)
-                    .map_err(|e| e.to_string())
-            })
-            .clone()
-            .map_err(sunrise_protocol::Error::new)?;
-        if made_here {
-            let mut cache = self.cache();
-            // Unless pushed out while it was being made.
-            if cache
+        let mut cache = self.cache();
+        if let Some(frame) = cache.frames.get(&key) {
+            return (key, frame.clone());
+        }
+        let frame = Frame::default();
+        cache.frames.insert(key, frame.clone());
+        cache.order.push_back(key);
+        (key, frame)
+    }
+
+    fn fill_frame(
+        &self,
+        key: FrameKey,
+        frame: &Frame,
+        body: &[u8],
+    ) -> sunrise_protocol::Result<Arc<[u8]>> {
+        let mut publication = None;
+        let contents = frame.get_or_init(|| {
+            let contents = sunrise_protocol::frame::contents(body, Some(key.2))
+                .map(Arc::from)
+                .map_err(|e| e.to_string());
+            // Only the initializer takes this lock, after encoding. Hold it across
+            // publication and accounting so eviction cannot see an uncharged result.
+            publication = Some(self.cache());
+            contents
+        });
+        if let Some(mut cache) = publication
+            && cache
                 .frames
                 .get(&key)
-                .is_some_and(|f| Arc::ptr_eq(f, &frame))
-            {
-                cache.bytes += contents.len();
+                .is_some_and(|f| Arc::ptr_eq(f, frame))
+        {
+            match contents {
+                Ok(contents) => cache.bytes += contents.len(),
+                Err(_) => {
+                    cache.frames.remove(&key);
+                    cache.order.retain(|old| *old != key);
+                }
             }
             while cache.bytes > self.limit
                 && let Some(old) = cache.order.pop_front()
@@ -2749,7 +2799,7 @@ impl SharedFrames {
                     .unwrap_or(0);
             }
         }
-        Ok(contents)
+        contents.clone().map_err(sunrise_protocol::Error::new)
     }
 }
 
@@ -3905,6 +3955,48 @@ mod tests {
     }
 
     #[test]
+    fn shared_frames_charge_the_initializer_before_other_frames_can_evict() {
+        // Below the compression threshold the contents add exactly one byte.
+        let threshold = 16;
+        let frames = SharedFrames::new(9);
+        let oldest = [1; 4];
+        // Pause the original caller just after it inserts the FIFO slot. A caller
+        // on another thread initializes that slot and then forces eviction before
+        // the original caller resumes. Joining fixes the order without a sleep.
+        let (key, slot) = frames.frame_slot(&oldest, threshold);
+        let (first, newest) = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let first = frames.contents(&oldest, threshold).unwrap(); // 5 bytes
+                    frames.contents(&[2; 2], threshold).unwrap(); // 3 bytes
+                    let newest = frames.contents(&[3; 8], threshold).unwrap(); // 9 bytes
+                    (first, newest)
+                })
+                .join()
+                .unwrap()
+        });
+        let resumed = frames.fill_frame(key, &slot, &oldest).unwrap();
+        assert!(Arc::ptr_eq(&first, &resumed));
+        // The old insertion-owner accounting charged only 3 + 9, then debited
+        // the uncharged 5. It stopped at 7, leaving 12 bytes resident.
+        assert_eq!(frames.census(), (1, newest.len()));
+        assert!(Arc::ptr_eq(
+            &newest,
+            &frames.contents(&[3; 8], threshold).unwrap()
+        ));
+    }
+
+    #[test]
+    fn shared_frames_remove_failed_encodes_from_both_cache_and_fifo() {
+        // The uncompressed marker would make the encoded contents one byte too big.
+        let body = vec![0; sunrise_protocol::frame::MAX_FRAME];
+        let frames = SharedFrames::new(usize::MAX);
+        assert!(frames.contents(&body, body.len() + 1).is_err());
+        assert_eq!(frames.census(), (0, 0));
+        assert!(frames.cache().order.is_empty());
+    }
+
+    #[test]
     fn held_packets_go_together_and_in_order() {
         let (tx, rx) = channel();
         let sender = PlayerSender::new(tx, Arc::default());
@@ -4189,6 +4281,113 @@ mod tests {
             conn(2).packet(CLIENT_TICK_END, Vec::new()),
             Verdict::Go
         ));
+    }
+
+    #[cfg(feature = "net-trace")]
+    fn finish_local_configuration(c: &mut Connection) {
+        c.send(&login::Serverbound::LoginAcknowledged(sunrise_protocol::packets::Empty).encode())
+            .unwrap();
+        loop {
+            let (id, payload) = c.recv().unwrap();
+            match cfg::Clientbound::decode(id, &payload).unwrap() {
+                cfg::Clientbound::SelectKnownPacks(p) => c
+                    .send(&cfg::Serverbound::SelectKnownPacks(p).encode())
+                    .unwrap(),
+                cfg::Clientbound::FinishConfiguration(_) => {
+                    c.send(
+                        &cfg::Serverbound::FinishConfiguration(sunrise_protocol::packets::Empty)
+                            .encode(),
+                    )
+                    .unwrap();
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[cfg(feature = "net-trace")]
+    #[test]
+    fn capture_seals_in_flight_login_drains_unpolled_join_and_refuses_nonempty_start() {
+        let nonempty = tempfile::tempdir().unwrap();
+        std::fs::write(nonempty.path().join("old.pkt"), b"stale\n").unwrap();
+        let config = || crate::lan::NetConfig {
+            announce: false,
+            listen: false,
+            ..crate::lan::NetConfig::loopback(0, "Capture".into(), 8)
+        };
+        let err = match crate::lan::Lan::start_in_capture_dir(
+            Arc::new(crate::lan::data::SyncData::empty()),
+            config(),
+            nonempty.path(),
+        ) {
+            Ok(_) => panic!("nonempty capture directory must fail Lan startup"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+
+        // An in-flight login past try_admit that reaches play after seal is closed without
+        // entering play or escaping manifest accounting.
+        let dir_sealed = tempfile::tempdir().unwrap();
+        let lan = crate::lan::Lan::start_in_capture_dir(
+            Arc::new(crate::lan::data::SyncData::empty()),
+            config(),
+            dir_sealed.path(),
+        )
+        .unwrap();
+        let mut late = Connection::local(lan.connect_local().unwrap());
+        late.reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        login_profile(&mut late, "LateGuest");
+        lan.shared.seal_capture();
+        finish_local_configuration(&mut late);
+        let err = late
+            .recv()
+            .expect_err("sealed play gate must close late login");
+        assert!(
+            err.is_end_of_stream(),
+            "expected EOF on sealed late login, got: {err}"
+        );
+        assert!(lan.poll().is_empty(), "sealed login must not emit Joined");
+        drop(lan);
+        let manifest = std::fs::read_to_string(dir_sealed.path().join("manifest.tsv")).unwrap();
+        assert!(manifest.ends_with("# end\t0\tok\n"), "{manifest}");
+
+        // A connection that reached play but was not yet polled by gameplay before Lan::drop
+        // is closed cleanly and finalized in manifest.tsv instead of timing out as unclosed.
+        let dir_unpolled = tempfile::tempdir().unwrap();
+        let lan = crate::lan::Lan::start_in_capture_dir(
+            Arc::new(crate::lan::data::SyncData::empty()),
+            config(),
+            dir_unpolled.path(),
+        )
+        .unwrap();
+        let mut early = Connection::local(lan.connect_local().unwrap());
+        early
+            .reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        login_profile(&mut early, "EarlyGuest");
+        finish_local_configuration(&mut early);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while lan.shared.events.stats().queued_items == 0 {
+            assert!(Instant::now() < deadline, "Joined was not queued");
+            std::thread::yield_now();
+        }
+        drop(lan);
+        let err = early
+            .recv()
+            .expect_err("Lan::drop must close unpolled guest");
+        assert!(
+            err.is_end_of_stream(),
+            "expected EOF on unpolled guest after Lan::drop, got: {err}"
+        );
+        let manifest = std::fs::read_to_string(dir_unpolled.path().join("manifest.tsv")).unwrap();
+        assert!(manifest.contains("EarlyGuest-1.pkt\tok\t0"), "{manifest}");
+        assert!(manifest.ends_with("# end\t1\tok\n"), "{manifest}");
+        let pkt = std::fs::read_to_string(dir_unpolled.path().join("EarlyGuest-1.pkt")).unwrap();
+        assert!(pkt.ends_with("# end\t0\tok\n"), "{pkt}");
     }
 }
 

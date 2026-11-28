@@ -6036,7 +6036,7 @@ impl crate::game::ServerGame<'_> {
             Some((
                 self.entity_ticking_area(),
                 world_items!(self),
-                &self.common.motion.attributes,
+                self.common.motion.attributes(),
             ))
         } else {
             None
@@ -6224,8 +6224,11 @@ impl crate::game::ServerGame<'_> {
         self.tick_leads();
         // Vanilla's spawning and raids run before ChunkMap.tick.
         self.tick_spawners();
-        let ticked =
-            sunrise_level::spans::time("tick_creature_entities", || self.tick_creature_entities());
+        let ticked = sunrise_level::spans::time("tick_creature_entities", || {
+            crate::rng_count::in_consumer(crate::rng_count::Consumer::MobBatch, || {
+                self.tick_creature_entities()
+            })
+        });
         self.dismount_underwater_mob_riders();
         ticked
     }
@@ -9281,6 +9284,10 @@ pub mod pending_birth_matrix_tests;
 #[cfg(test)]
 #[path = "death_loot_context_tests_server.rs"]
 pub(in crate::game) mod death_loot_context_tests;
+
+#[cfg(test)]
+#[path = "vehicle_loot_tests.rs"]
+pub(in crate::game) mod vehicle_loot_tests;
 
 #[cfg(any(test, feature = "test-support"))]
 #[path = "projectile_targets_tests_server.rs"]

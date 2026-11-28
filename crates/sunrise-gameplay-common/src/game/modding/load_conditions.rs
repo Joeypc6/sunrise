@@ -13,6 +13,7 @@ use std::{
     path::Path,
     sync::Arc,
 };
+use sunrise_core::graph::strongly_connected_components;
 use sunrise_level::datapack::RegistryFiles;
 use sunrise_world::{
     conditions::{ConditionProgress, LoadConditions},
@@ -129,7 +130,8 @@ pub struct VanillaValueInputs<'a, 'b> {
 #[derive(Default)]
 pub struct RegistryView {
     pub ids: BTreeMap<String, BTreeSet<String>>,
-    pub tags: BTreeMap<String, BTreeSet<String>>,
+    /// Each registry's bound tags, each with whether it holds an entry.
+    pub tags: BTreeMap<String, BTreeMap<String, bool>>,
 }
 
 impl RegistryView {
@@ -140,11 +142,12 @@ impl RegistryView {
                     .iter()
                     .map(|(key, ids)| (key.as_str(), ids.iter().map(String::as_str))),
             )
-            .with_tags(
-                self.tags
-                    .iter()
-                    .map(|(key, tags)| (key.as_str(), tags.iter().map(String::as_str))),
-            )
+            .with_tags(self.tags.iter().map(|(key, tags)| {
+                (
+                    key.as_str(),
+                    tags.iter().map(|(tag, held)| (tag.as_str(), *held)),
+                )
+            }))
     }
 }
 
@@ -193,9 +196,9 @@ fn admit_datapack_registries(
         .collect();
     let programs: Vec<_> = winners
         .iter()
-        .map(|(_, _, json)| {
+        .map(|(file, _, json)| {
             let (text, json) = json.as_ref().map_err(Clone::clone)?;
-            base.decode_file_conditions(json)
+            base.decode_file_conditions(json, file)
                 .map(|program| (*text, program))
                 .map_err(malformed)
         })
@@ -299,8 +302,7 @@ fn admit_datapack_registries(
             view.tags.insert(
                 declaration.key.clone(),
                 tags.iter()
-                    .filter(|(_, members)| !members.is_empty())
-                    .map(|(tag, _)| tag.clone())
+                    .map(|(tag, members)| (tag.clone(), !members.is_empty()))
                     .collect(),
             );
             builder.stage_registry(&declaration.key, entries, tags);
@@ -308,7 +310,8 @@ fn admit_datapack_registries(
             bound_any = true;
         }
         if !bound_any {
-            let component = registry_components(&dependencies)
+            // Resolve a blocked dependency component before its consumers.
+            let component = strongly_connected_components(&dependencies)
                 .into_iter()
                 .rev()
                 .find(|members| !dependencies[members[0]].is_empty())
@@ -407,18 +410,17 @@ pub fn worldgen_load_conditions(
         ..sunrise_world::loot::PackOverlay::default()
     };
     let builtin_ids = sunrise_world::tag_layers::builtin_ids(resources).unwrap_or_default();
-    let mut non_empty_tags: Vec<(String, Vec<String>)> = Vec::new();
+    let mut bound_tags: Vec<(String, Vec<(String, bool)>)> = Vec::new();
     for kind in WORLDGEN_STATIC_TAG_REGISTRIES {
         let ids = builtin_ids.get(kind);
         if let Ok(loaded) = sunrise_world::tag_layers::load(resources, kind, &tag_overlay, |id| {
             ids.is_none_or(|known| known.contains(id))
         }) {
-            let tags: Vec<String> = loaded
+            let tags: Vec<(String, bool)> = loaded
                 .into_iter()
-                .filter(|(_, members)| !members.is_empty())
-                .map(|(tag, _)| tag)
+                .map(|(tag, members)| (tag, !members.is_empty()))
                 .collect();
-            non_empty_tags.push((format!("minecraft:{kind}"), tags));
+            bound_tags.push((format!("minecraft:{kind}"), tags));
         }
     }
     base.clone()
@@ -428,58 +430,12 @@ pub fn worldgen_load_conditions(
                 .iter()
                 .map(|(registry, ids)| (registry.as_str(), ids.iter().map(String::as_str))),
         )
-        .with_tags(
-            non_empty_tags
-                .iter()
-                .map(|(registry, tags)| (registry.as_str(), tags.iter().map(String::as_str))),
-        )
-}
-
-/// Strongly connected components, consumers before their dependencies
-/// (Kosaraju's two traversals). Pack input controls the depth, so use explicit stacks.
-fn registry_components(dependencies: &[BTreeSet<usize>]) -> Vec<Vec<usize>> {
-    let mut consumers = vec![Vec::new(); dependencies.len()];
-    for (consumer, producers) in dependencies.iter().enumerate() {
-        for &producer in producers {
-            consumers[producer].push(consumer);
-        }
-    }
-    let mut seen = vec![false; dependencies.len()];
-    let mut finished = Vec::with_capacity(dependencies.len());
-    let mut stack = Vec::new();
-    for root in 0..dependencies.len() {
-        stack.push((root, false));
-        while let Some((index, leaving)) = stack.pop() {
-            if leaving {
-                finished.push(index);
-            } else if !std::mem::replace(&mut seen[index], true) {
-                stack.push((index, true));
-                stack.extend(
-                    dependencies[index]
-                        .iter()
-                        .map(|&producer| (producer, false)),
-                );
-            }
-        }
-    }
-    seen.fill(false);
-    let mut components = Vec::new();
-    let mut stack = Vec::new();
-    for root in finished.into_iter().rev() {
-        if seen[root] {
-            continue;
-        }
-        let mut component = Vec::new();
-        stack.push(root);
-        while let Some(index) = stack.pop() {
-            if !std::mem::replace(&mut seen[index], true) {
-                component.push(index);
-                stack.extend(consumers[index].iter().copied());
-            }
-        }
-        components.push(component);
-    }
-    components
+        .with_tags(bound_tags.iter().map(|(registry, tags)| {
+            (
+                registry.as_str(),
+                tags.iter().map(|(tag, held)| (tag.as_str(), *held)),
+            )
+        }))
 }
 
 pub fn conditions_for_mods(
@@ -520,12 +476,10 @@ pub fn conditions_for_mods(
                 if !enabled {
                     return Ok(false);
                 }
-                let mut arguments = args.as_object().cloned().expect("decoded condition object");
-                arguments.remove("type");
-                let arguments = serde_json::Value::Object(arguments);
+                // The evaluator passes the arguments without the key that named the condition.
                 owner
                     .call("load condition", "test_load_condition", || {
-                        handler.test(&arguments)
+                        handler.test(args)
                     })
                     .map_err(|reason| format!("condition {name}: {reason}"))?
                     .map_err(|error| format!("condition {name}: mod {}: {error}", owner.id()))

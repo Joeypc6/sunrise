@@ -18,6 +18,7 @@
 pub mod construction;
 pub mod execution;
 mod image_formats;
+pub mod indirect;
 mod mod_link;
 pub mod mod_pack;
 mod packed;
@@ -32,3 +33,6 @@ pub use types::*;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod blend_target_tests;

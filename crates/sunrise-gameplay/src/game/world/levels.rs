@@ -1513,19 +1513,6 @@ impl crate::game::ServerGame<'_> {
         }
     }
 
-    /// Far terrain for a client in `dim`: the level in place may be another
-    /// one, the server ticking its levels in turn.
-    pub(in crate::game) fn lod_source_in(
-        &self,
-        dim: Dim,
-    ) -> Option<Arc<dyn sunrise_level::chunk_streamer::LodSource>> {
-        if dim == self.common.dim {
-            return Some(self.server.streaming.lod_source());
-        }
-        let parked = self.server.levels.0.parked.get(&dim)?;
-        Some(parked.streaming.lod_source())
-    }
-
     /// Put `dim`'s level in place for a command whose source is there
     /// (`execute in`, `execute at` a player in another level), opening it if
     /// nobody is in it; returns the level to put back afterwards. Only a
@@ -1562,10 +1549,22 @@ impl crate::game::ServerGame<'_> {
 
     /// Tick shared functions before levels, then player connections, between the server tick hooks.
     pub fn tick_server(&mut self, paused: bool) -> Result<()> {
-        self.with_residency_tick(|game| game.tick_server_body(paused))
+        let rng_tick = crate::rng_count::begin_tick();
+        let result = self.with_residency_tick(|game| game.tick_server_body(paused));
+        if result.is_ok() {
+            rng_tick.publish();
+        }
+        result
     }
 
     fn tick_server_body(&mut self, paused: bool) -> Result<()> {
+        #[cfg(feature = "net-trace")]
+        if let Some(host) = self.server.lan.as_ref() {
+            host.hub
+                .lan
+                .shared
+                .set_capture_tick(self.common.world.game_time);
+        }
         // A panic something caught left a game that carried on: its record ends with the tick.
         self.server.interrupted_turns.clear();
         // `tickRateManager.tick()` once per server tick, before any level
@@ -1617,8 +1616,13 @@ impl crate::game::ServerGame<'_> {
         let mut result = Ok(());
         for phase in server_tick_phases(&dimensions, &order) {
             if let ServerTickPhase::IdleLevel(dim) = phase {
+                if let Some(runs) = running {
+                    self.count_fight_empty_time(dim, runs);
+                }
                 if running == Some(true) {
                     self.tick_level_environment(dim);
+                    // ServerLevel.tick: the fight still ticks while `emptyTime < 300`.
+                    self.tick_idle_fight(dim);
                 }
                 continue;
             }
@@ -1626,7 +1630,10 @@ impl crate::game::ServerGame<'_> {
                 if running.is_some() && self.server.lan.is_some() {
                     let holding = sunrise_sim::lan::Holding::start();
                     result = sunrise_level::spans::time("lan_guest_connections", || {
-                        self.tick_guest_connections(true)
+                        crate::rng_count::in_consumer(
+                            crate::rng_count::Consumer::LanGuestConnections,
+                            || self.tick_guest_connections(true),
+                        )
                     });
                     if result.is_ok()
                         && let Some(host) = self.server.lan.as_mut()
@@ -1635,7 +1642,9 @@ impl crate::game::ServerGame<'_> {
                     }
                     drop(holding);
                     if let Some(host) = self.server.lan.as_ref() {
-                        sunrise_sim::lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
+                        sunrise_level::spans::time("lan_handoff", || {
+                            sunrise_sim::lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
+                        });
                     }
                 }
                 break;
@@ -1657,6 +1666,9 @@ impl crate::game::ServerGame<'_> {
             if let Err(e) = self.enter_level(dim) {
                 result = Err(e);
                 break;
+            }
+            if let Some(runs) = running {
+                self.count_fight_empty_time(dim, runs);
             }
             self.server.level_pass = Pass {
                 first: k == 0,
@@ -2173,6 +2185,9 @@ impl crate::game::ServerGame<'_> {
 
     /// The mods hear `dim`'s level open (`LevelEvent.Load`), on a server.
     pub fn native_level_opened(&mut self, dim: Dim) {
+        if self.common.is_logical_server() {
+            self.open_level_fight(dim);
+        }
         if dim == self.common.dim {
             self.server.levels.0.active_closed = false;
         }
@@ -2469,6 +2484,13 @@ impl crate::game::ServerGame<'_> {
         if running {
             self.tick_level_environment(self.common.dim);
             self.common.world.game_time += 1;
+            #[cfg(feature = "net-trace")]
+            if let Some(host) = self.server.lan.as_ref() {
+                host.hub
+                    .lan
+                    .shared
+                    .set_capture_tick(self.common.world.game_time);
+            }
         } else if self.common.clock.still() {
             // Under `SUNRISE_STILL` a frozen world's rain and thunder sit at their levels, as a
             // shader pack's smoothed values do, so `/weather rain` shows full rain without

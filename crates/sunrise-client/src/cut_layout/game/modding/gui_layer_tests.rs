@@ -304,7 +304,7 @@ fn health_extraction_runs_only_in_the_vanilla_layer_body() {
         game.client.screen = Screen::Playing;
         game.client.chat_ui.hide_gui = false;
         set_fixture_mode(game, GameMode::Survival);
-        let mut player = PlayerMotion::new(game.motion, Vec3::new(2.0, 64.0, 2.0)).unwrap();
+        let mut player = PlayerMotion::new(game.motion, Vec3::new(2.0, 64.0, 2.0));
         player.set_health(12.0, false).unwrap();
         player
             .set_modifier(
@@ -914,13 +914,10 @@ fn a_gui_wrapper_panic_is_contained_but_delegated_engine_paint_is_fatal() {
 fn enter_test_world(game: &mut sunrise_client_gameplay::game::ClientGame<'_>) {
     game.client.title.0 = None;
     game.set_screen(Screen::Playing);
-    game.player = Some(
-        sunrise_sim::motion::PlayerMotion::new(
-            game.motion,
-            sunrise_core::geometry::Vec3::new(0.5, 64.0, 0.5),
-        )
-        .unwrap(),
-    );
+    game.player = Some(sunrise_sim::motion::PlayerMotion::new(
+        game.motion,
+        sunrise_core::geometry::Vec3::new(0.5, 64.0, 0.5),
+    ));
 }
 
 #[test]
@@ -1965,6 +1962,99 @@ fn a_panicking_hud_painter_shows_its_error_toast_under_f1() {
             );
         });
     });
+}
+
+#[test]
+#[ignore = "daily"]
+fn replacement_status_rows_reserve_only_visible_paint() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    sunrise_gameplay_common::game::in_own_process(
+        "cut_layout::game::client_side::gui_layer_tests::replacement_status_rows_reserve_only_visible_paint",
+        || {
+            struct Replacement(Arc<AtomicUsize>);
+
+            #[mod_api::__subscriptions]
+            impl Hooks for Replacement {
+                fn register_gui_layers(
+                    &self,
+                    _: &RegistrationContext,
+                    event: &mut RegisterGuiLayersEvent<'_>,
+                ) {
+                    let case = self.0.clone();
+                    assert!(event.layers.replace_layer(
+                        PLAYER_HEALTH,
+                        Box::new(move |_, draw| {
+                            let row = [80.0, 100.0, 70.0, 4.0];
+                            match case.load(Ordering::Relaxed) {
+                                0 => draw
+                                    .with_scissor([80.0, 105.0, 70.0, 2.0], &mut |draw| {
+                                        draw.fill(row, HEALTH_MARKER);
+                                    })
+                                    .unwrap(),
+                                1 => draw
+                                    .with_scissor([80.0, 102.0, 70.0, 2.0], &mut |draw| {
+                                        draw.fill(row, HEALTH_MARKER);
+                                    })
+                                    .unwrap(),
+                                2 => draw.fill(row, HEALTH_MARKER),
+                                _ => draw.quad(
+                                    [[80.0, 100.0], [90.0, 100.0], [100.0, 100.0], [110.0, 100.0]],
+                                    HEALTH_MARKER,
+                                ),
+                            }
+                        }),
+                    ));
+                }
+            }
+
+            with_client_game(|game| {
+                let case = Arc::new(AtomicUsize::new(0));
+                mod_platform::__private::install(
+                    vec![ModEntry::new(
+                        "health-test",
+                        Box::new(Replacement(case.clone())),
+                    )]
+                    .into(),
+                );
+                sunrise_client_gameplay::game::client_side::mods_client::register_gui_layers(
+                    ExecutionRole::Client,
+                );
+                enter_test_world(game);
+                game.client.chat_ui.hide_gui = true; // No vanilla status rows; the replacement still runs.
+                for (index, top) in [
+                    // [100, 104) misses [105, 107): no keep-out, so the bottom is the view height.
+                    None,
+                    // [100, 104) intersected with [102, 104) starts at max(100, 102).
+                    Some(102.0),
+                    // Without a clip the row starts at y = 100.
+                    Some(100.0),
+                    // All four y coordinates are 100, so both triangles have zero area.
+                    None,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    case.store(index, Ordering::Relaxed);
+                    let batch = game.hud_layers([320, 240]);
+                    assert_eq!(
+                        batch
+                            .vertices
+                            .iter()
+                            .filter(|v| v.color == HEALTH_MARKER)
+                            .count(),
+                        6,
+                        "replacement vertices in case {index}",
+                    );
+                    assert_eq!(
+                        game.client.chat_ui.room.bottom(),
+                        top.unwrap_or(batch.height),
+                        "case {index}"
+                    );
+                }
+            });
+        },
+    );
 }
 
 #[test]
